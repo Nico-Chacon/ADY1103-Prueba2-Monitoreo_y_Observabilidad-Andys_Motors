@@ -49,7 +49,7 @@ resource "aws_instance" "servidor" {
     project_name = var.project_name
     perfiles     = each.value.perfiles
     region       = var.aws_region
-    bucket       = aws_s3_bucket.documentos.bucket
+    bucket       = local.bucket_documentos
     objeto       = aws_s3_object.demo.key
 
     db_host     = local.db_host
@@ -118,7 +118,7 @@ resource "aws_instance" "monitoreo" {
     borde_ip         = local.ips["borde"]
     pagos_ip         = local.host_de["pagos"]
     region           = var.aws_region
-    bucket           = aws_s3_bucket.documentos.bucket
+    bucket           = local.bucket_documentos
     objeto           = aws_s3_object.demo.key
 
     # Bloque YAML de targets ya indentado y comentado, para que el
