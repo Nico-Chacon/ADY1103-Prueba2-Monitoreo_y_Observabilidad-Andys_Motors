@@ -1,4 +1,4 @@
-name: Terraform - AndysMotors (Learner Lab)
+name: Terraform apply 
 
 # Se ejecuta de dos formas:
 #   1) Automatica: cada "git push" a main hace plan + apply (despliega la infraestructura).
