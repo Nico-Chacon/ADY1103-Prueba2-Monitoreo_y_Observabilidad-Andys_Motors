@@ -66,12 +66,22 @@ output "endpoints_de_metricas" {
 
 output "grafana" {
   description = "Grafana de referencia (usuario admin). Solo existe si enable_monitoring = true."
-  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:3000" : "monitoreo de referencia deshabilitado: el stack lo construye el estudiante"
+  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:3000" : "monitoreo deshabilitado"
 }
 
 output "prometheus" {
   description = "Prometheus de referencia. La pestania /targets debe mostrar las plataformas en verde."
   value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:9090/targets" : "monitoreo de referencia deshabilitado"
+}
+
+output "ssh_monitoreo" {
+  description = "Comando para entrar por SSH a la EC2 de monitoreo desde tu CMD."
+  value       = var.enable_monitoring ? "ssh -i labsuser.pem ec2-user@${aws_instance.monitoreo[0].public_ip}" : "monitoreo deshabilitado"
+}
+
+output "ip_publica_monitoreo" {
+  description = "IP publica de la EC2 de monitoreo (Prometheus :9090, Grafana :3000)."
+  value       = var.enable_monitoring ? aws_instance.monitoreo[0].public_ip : "monitoreo deshabilitado"
 }
 
 output "bucket_documentos" {

@@ -1,18 +1,18 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# Stack de monitoreo DE REFERENCIA: Prometheus + Grafana.
+# EC2 de MONITOREO - Andys Motors (EP2 ADY1103)
 #
-# Esta maquina solo existe cuando enable_monitoring = true. Si el ejercicio es
-# que el estudiante construya su propio stack, hay que dejarla apagada: el
-# entorno de Andys Motors expone la telemetria, y recolectarla es el trabajo.
+# Este script SOLO deja la maquina lista:
+#   - instala Docker y Docker Compose
+#   - deja escritos prometheus.yml, el datasource de Grafana y docker-compose.yml
+#     en /opt/monitoring (NO los inicia)
+#   - descarga los scripts del entorno (generar_trafico.py, escenario.sh)
 #
-# Scrapea las cinco plataformas de negocio (que exponen /metrics en su propio
-# puerto) y el balanceador HAProxy, que trae su exporter integrado.
+# El despliegue de Prometheus y Grafana se hace A MANO por SSH:
+#   cd /opt/monitoring && docker compose up -d prometheus
+#   cd /opt/monitoring && docker compose up -d grafana
 #
-# Se usan IP PRIVADAS: se conservan cuando la instancia se detiene y se vuelve a
-# encender, mientras que las publicas cambian.
-#
-# Los logs de este script quedan en /var/log/cloud-init-output.log
+# Log de este script: /var/log/cloud-init-output.log
 # ---------------------------------------------------------------------------
 set -euxo pipefail
 
@@ -20,7 +20,7 @@ MON_DIR=/opt/monitoring
 COMPOSE_VERSION=v2.29.7
 
 dnf update -y
-dnf install -y docker
+dnf install -y docker unzip
 systemctl enable --now docker
 usermod -aG docker ec2-user
 
@@ -33,30 +33,60 @@ chmod +x "$CLI_PLUGINS/docker-compose"
 mkdir -p "$MON_DIR"/prometheus "$MON_DIR"/grafana/provisioning/datasources
 cd "$MON_DIR"
 
-cat > prometheus/prometheus.yml <<PROM
+# ---------------------------------------------------------------------------
+# prometheus.yml  (ESTE es el archivo que se entrega como adjunto)
+# ---------------------------------------------------------------------------
+cat > prometheus/prometheus.yml <<'PROM'
+# =============================================================================
+# prometheus.yml - AndysMotors (EP2 ADY1103 Monitoreo y Observabilidad)
+# Servidor Prometheus en contenedor Docker, EC2 de monitoreo.
+# Se monta en el contenedor como /etc/prometheus/prometheus.yml
+# =============================================================================
+
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 15s        # cada cuanto Prometheus recolecta metricas
+  evaluation_interval: 15s    # cada cuanto evalua reglas
+  external_labels:
+    proyecto: "andysmotors"
+    ambiente: "laboratorio"
 
 scrape_configs:
+  # ---- 1) Prometheus se monitorea a si mismo --------------------------------
   - job_name: "prometheus"
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Las cinco plataformas de negocio. Cada una expone sus metricas tecnicas y
-  # de negocio en el mismo puerto en el que atiende el trafico.
+  # ---- 2) Plataformas de negocio de Andys Motors ---------------------------
+  # Cada aplicacion Node.js expone /metrics en el mismo puerto en que atiende
+  # trafico (metricas tecnicas RED + metricas de negocio). Se usan IP privadas:
+  # son fijas y no cambian al reiniciar las instancias.
   - job_name: "andys-plataformas"
+    metrics_path: /metrics
     static_configs:
 ${targets_plataformas}
 
-  # Balanceador de entrada. HAProxy trae el exporter de Prometheus integrado.
+  # ---- 3) Proveedor externo de pagos (gateway), puerto 8086 -----------------
+  # Mide las autorizaciones (aprobadas/rechazadas) del proveedor externo.
+  - job_name: "andys-gateway-externo"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["${pagos_ip}:8086"]
+        labels:
+          plataforma: "gateway"
+
+  # ---- 4) Balanceador HAProxy (exporter Prometheus integrado) ---------------
+  # Entrega estado UP/DOWN de cada backend y codigos 2xx/4xx/5xx de entrada.
   - job_name: "haproxy"
+    metrics_path: /metrics
     static_configs:
       - targets: ["${borde_ip}:8404"]
         labels:
-          rol: "borde"
+          plataforma: "borde"
 PROM
 
+# ---------------------------------------------------------------------------
+# Datasource de Grafana (aprovisionado: apunta al contenedor "prometheus")
+# ---------------------------------------------------------------------------
 cat > grafana/provisioning/datasources/datasource.yml <<'GRAFANA'
 apiVersion: 1
 
@@ -67,33 +97,48 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
+    jsonData:
+      timeInterval: 15s
 GRAFANA
 
+# Credenciales de Grafana (heredoc entrecomillado: el shell no expande nada)
+cat > grafana.env <<'ENVGF'
+GF_SECURITY_ADMIN_USER=admin
+GF_SECURITY_ADMIN_PASSWORD=${grafana_password}
+GF_USERS_ALLOW_SIGN_UP=false
+ENVGF
+chmod 600 grafana.env
+
+# ---------------------------------------------------------------------------
+# docker-compose.yml  (no se inicia; se levanta a mano)
+# Retencion de datos de Prometheus (rotacion): 15 dias o 2 GB, lo que ocurra primero.
+# ---------------------------------------------------------------------------
 cat > docker-compose.yml <<'COMPOSE'
 services:
   prometheus:
     image: prom/prometheus:latest
-    container_name: serverA-prometheus
+    container_name: andys-prometheus
     restart: unless-stopped
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--storage.tsdb.retention.size=2GB"
       - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "9090:9090"
     networks: [monitoring]
 
   grafana:
     image: grafana/grafana:latest
-    container_name: serverA-grafana
+    container_name: andys-grafana
     restart: unless-stopped
     depends_on: [prometheus]
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: __GRAFANA_PASSWORD__
+    env_file:
+      - grafana.env
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -110,10 +155,29 @@ volumes:
   grafana_data:
 COMPOSE
 
-sed -i "s|__GRAFANA_PASSWORD__|${grafana_password}|g" docker-compose.yml
-chmod 600 docker-compose.yml
+# ---------------------------------------------------------------------------
+# Variables de entorno para los scripts del entorno (por IP privada)
+# ---------------------------------------------------------------------------
+cat > andys.env.sh <<'ENVSH'
+${entorno_env}
+ENVSH
 
-docker compose up -d
+# ---------------------------------------------------------------------------
+# Scripts del entorno (generar_trafico.py y escenario.sh) desde S3.
+# Si falla, NO detiene el resto: el monitoreo igual queda listo.
+# ---------------------------------------------------------------------------
+if ! command -v aws >/dev/null 2>&1; then
+  dnf install -y awscli-2 || dnf install -y aws-cli || true
+fi
+mkdir -p /opt/andys-demo
+if aws s3 cp "s3://${bucket}/${objeto}" /tmp/demo.zip --region "${region}"; then
+  unzip -o -q /tmp/demo.zip -d /opt/andys-demo
+  chmod +x /opt/andys-demo/scripts/*.sh /opt/andys-demo/scripts/*.py || true
+else
+  echo "AVISO: no se pudo descargar el entorno desde S3 (los scripts de trafico no estaran)."
+fi
 
-echo "=== Stack de monitoreo de ${project_name} levantado ==="
-docker compose ps
+chown -R ec2-user:ec2-user "$MON_DIR" /opt/andys-demo
+
+echo "=== EC2 de monitoreo de ${project_name} lista (Prometheus/Grafana SIN iniciar) ==="
+ls -la "$MON_DIR"

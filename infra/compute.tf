@@ -14,6 +14,15 @@
 locals {
   subnet_ids = sort(data.aws_subnets.default.ids)
 
+  # Texto que aparece como comentario sobre cada target en prometheus.yml.
+  descripcion_plataforma = {
+    web    = "Sitio web publico (catalogo, contacto, agendamiento)"
+    stock  = "Consulta de stock de vehiculos"
+    agenda = "Agendamiento de visitas (solicitados vs confirmados)"
+    crm    = "CRM y ventas (oportunidades creadas vs vinculadas)"
+    pagos  = "Sistema de pagos (pagos por resultado y monto)"
+  }
+
   # Security Group que corresponde a cada rol.
   sg_de_rol = {
     "aplicacion"    = aws_security_group.app.id
@@ -105,11 +114,28 @@ resource "aws_instance" "monitoreo" {
     project_name     = var.project_name
     grafana_password = var.grafana_admin_password
     borde_ip         = local.ips["borde"]
-    # Se arma el bloque YAML de targets ya indentado, para que el archivo de
-    # Prometheus quede valido.
+    pagos_ip         = local.host_de["pagos"]
+    region           = var.aws_region
+    bucket           = aws_s3_bucket.documentos.bucket
+    objeto           = aws_s3_object.demo.key
+
+    # Bloque YAML de targets ya indentado y comentado, para que el
+    # prometheus.yml quede valido y autoexplicativo.
     targets_plataformas = join("\n", [
       for plataforma, puerto in local.puertos :
-      "      - targets: [\"${local.host_de[plataforma]}:${puerto}\"]\n        labels:\n          plataforma: \"${plataforma}\""
+      "      # ${plataforma}: ${local.descripcion_plataforma[plataforma]}\n      - targets: [\"${local.host_de[plataforma]}:${puerto}\"]\n        labels:\n          plataforma: \"${plataforma}\""
+    ])
+
+    # Variables de entorno para escenario.sh y generar_trafico.py (se usan
+    # desde la propia EC2 de monitoreo, por IP privada).
+    entorno_env = join("\n", [
+      "export BORDE_ADDR=${local.ips["borde"]}",
+      "export STOCK_ADDR=${local.host_de["stock"]}",
+      "export AGENDA_ADDR=${local.host_de["agenda"]}",
+      "export CRM_ADDR=${local.host_de["crm"]}",
+      "export PAGOS_ADDR=${local.host_de["pagos"]}",
+      "export GATEWAY_ADDR=${local.host_de["pagos"]}",
+      "export ANDYS_ADMIN_TOKEN=${var.admin_token}",
     ])
   })
 
@@ -131,4 +157,7 @@ resource "aws_instance" "monitoreo" {
     Name = "${var.project_name}-monitoreo"
     Rol  = "monitoreo"
   }
+
+  # El zip del entorno debe estar en S3 antes de que la maquina lo descargue.
+  depends_on = [aws_s3_object.demo]
 }

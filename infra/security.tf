@@ -47,6 +47,19 @@ resource "aws_vpc_security_group_ingress_rule" "borde_metricas_monitoreo" {
   ip_protocol                  = "tcp"
 }
 
+# El monitoreo tambien genera trafico de prueba (generar_trafico.py) contra el
+# balanceador usando su IP privada.
+resource "aws_vpc_security_group_ingress_rule" "borde_http_monitoreo" {
+  count = var.enable_monitoring ? 1 : 0
+
+  security_group_id            = aws_security_group.borde.id
+  description                  = "Trafico de prueba desde la EC2 de monitoreo"
+  referenced_security_group_id = aws_security_group.monitoreo[0].id
+  from_port                    = 80
+  to_port                      = 80
+  ip_protocol                  = "tcp"
+}
+
 resource "aws_vpc_security_group_ingress_rule" "borde_ssh" {
   security_group_id = aws_security_group.borde.id
   description       = "SSH de administracion"
@@ -96,6 +109,18 @@ resource "aws_vpc_security_group_ingress_rule" "app_desde_monitoreo" {
   referenced_security_group_id = aws_security_group.monitoreo[0].id
   from_port                    = each.value
   to_port                      = each.value
+  ip_protocol                  = "tcp"
+}
+
+# El proveedor externo de pagos (gateway) tambien expone /metrics en el 8086.
+resource "aws_vpc_security_group_ingress_rule" "app_gateway_monitoreo" {
+  count = var.enable_monitoring ? 1 : 0
+
+  security_group_id            = aws_security_group.app.id
+  description                  = "Scraping de /metrics del gateway externo desde el monitoreo"
+  referenced_security_group_id = aws_security_group.monitoreo[0].id
+  from_port                    = 8086
+  to_port                      = 8086
   ip_protocol                  = "tcp"
 }
 
