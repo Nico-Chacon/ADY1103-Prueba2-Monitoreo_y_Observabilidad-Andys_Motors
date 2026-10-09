@@ -1,0 +1,15 @@
+# Credenciales y llaves: NUNCA al repositorio
+.aws-credentials
+*.pem
+.env
+
+# Terraform
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+tfplan
+crash.log
+
+# Node
+node_modules/

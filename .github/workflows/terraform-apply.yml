@@ -1,0 +1,151 @@
+name: Terraform - AndysMotors (Learner Lab)
+
+# Se ejecuta de dos formas:
+#   1) Automatica: cada "git push" a main hace plan + apply (despliega la infraestructura).
+#   2) Manual: Actions > Run workflow, o "gh workflow run terraform.yml -f accion=destroy"
+#      (la destruccion NUNCA es automatica).
+# Las credenciales y passwords viven en Settings > Secrets and variables > Actions
+# y nunca se escriben en el repositorio.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      accion:
+        description: "Que hacer con la infraestructura"
+        type: choice
+        required: true
+        default: plan
+        options: [plan, apply, destroy, output]
+
+# Evita dos ejecuciones simultaneas contra el mismo state.
+concurrency:
+  group: terraform-andys-motors
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Si la carpeta infra/ no esta en la raiz del repositorio, ajustar esta ruta.
+    defaults:
+      run:
+        working-directory: infra
+
+    env:
+      # En un push la accion es "apply"; en ejecucion manual, la que se elija.
+      ACCION: ${{ inputs.accion || 'apply' }}
+      # --- Credenciales temporales del Learner Lab (cambian en cada sesion) ---
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: us-east-1
+      # --- Variables de Terraform (equivalen a terraform.tfvars) ---
+      TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+      TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN }}
+      # true: crea la instancia de monitoreo y las reglas de Security Group
+      # que permiten leer /metrics (la instalacion de Prometheus/Grafana es manual).
+      TF_VAR_enable_monitoring: "true"
+      TF_VAR_topologia: ${{ vars.TOPOLOGIA || 'completa' }}
+      # --- Backend remoto ---
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "0"
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Verificar que estan todos los secrets y variables
+        run: |
+          faltan=0
+          verificar() {  # $1 = variable de entorno, $2 = nombre en GitHub
+            if [ -z "${!1}" ]; then
+              echo "::error::Falta configurar $2 en Settings > Secrets and variables > Actions"
+              faltan=1
+            fi
+          }
+          verificar AWS_ACCESS_KEY_ID           "secret AWS_ACCESS_KEY_ID"
+          verificar AWS_SECRET_ACCESS_KEY       "secret AWS_SECRET_ACCESS_KEY"
+          verificar AWS_SESSION_TOKEN           "secret AWS_SESSION_TOKEN"
+          verificar TF_VAR_admin_cidr           "secret ADMIN_CIDR"
+          verificar TF_VAR_db_password          "secret DB_PASSWORD"
+          verificar TF_VAR_grafana_admin_password "secret GRAFANA_ADMIN_PASSWORD"
+          verificar TF_VAR_admin_token          "secret ADMIN_TOKEN"
+          verificar TF_STATE_BUCKET             "variable TF_STATE_BUCKET"
+          exit $faltan
+
+      # Los archivos con finales de linea de Windows (CRLF) rompen los scripts
+      # de arranque de las instancias. Se normalizan a LF antes de empaquetar.
+      - name: Normalizar finales de linea (CRLF a LF)
+        run: |
+          find .. -type f \
+            \( -name '*.sh' -o -name '*.tftpl' -o -name '*.tf' -o -name '*.py' \
+               -o -name '*.js' -o -name '*.yml' -o -name '*.cfg' -o -name '*.sql' \
+               -o -name '*.html' -o -name 'Dockerfile' \) \
+            -not -path '*/.git/*' -not -path '*/node_modules/*' \
+            -exec sed -i 's/\r$//' {} +
+
+      - name: Comprobar que las credenciales del lab siguen vigentes
+        run: |
+          if aws sts get-caller-identity --query Account --output text > /dev/null; then
+            echo "Credenciales AWS validas"
+          else
+            echo "::error::Credenciales vencidas o mal copiadas. Actualiza los 3 secrets AWS_* con AWS Details > AWS CLI."
+            exit 1
+          fi
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      # El bucket del state se crea UNA vez y se reutiliza en las sesiones siguientes.
+      - name: Crear el bucket del state si no existe
+        run: |
+          if aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
+            echo "El bucket del state ya existe"
+          else
+            aws s3api create-bucket --bucket "$TF_STATE_BUCKET" --region us-east-1
+            aws s3api put-bucket-versioning --bucket "$TF_STATE_BUCKET" \
+              --versioning-configuration Status=Enabled || true
+            echo "Bucket del state creado"
+          fi
+
+      - name: terraform init
+        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform plan
+        if: env.ACCION == 'plan' || env.ACCION == 'apply'
+        run: terraform plan -input=false -out=tfplan
+
+      - name: terraform apply
+        if: env.ACCION == 'apply'
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: terraform destroy
+        if: env.ACCION == 'destroy'
+        run: terraform destroy -input=false -auto-approve
+
+      - name: Publicar outputs en el resumen de la ejecucion
+        if: env.ACCION == 'apply' || env.ACCION == 'output'
+        run: |
+          {
+            echo "## Outputs de Terraform"
+            echo
+            echo '```'
+            terraform output -no-color
+            echo '```'
+            echo
+            echo "El arranque de cada servidor toma entre 3 y 6 minutos."
+          } >> "$GITHUB_STEP_SUMMARY"
