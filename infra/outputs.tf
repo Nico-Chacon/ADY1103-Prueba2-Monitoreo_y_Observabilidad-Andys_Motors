@@ -86,7 +86,7 @@ output "ip_publica_monitoreo" {
 
 output "bucket_documentos" {
   description = "Bucket S3 con los documentos del negocio y el paquete del entorno."
-  value       = aws_s3_bucket.documentos.bucket
+  value       = local.bucket_documentos
 }
 
 output "rds_endpoint" {

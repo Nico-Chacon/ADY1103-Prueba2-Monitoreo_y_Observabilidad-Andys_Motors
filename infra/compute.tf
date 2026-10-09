@@ -13,6 +13,7 @@
 
 locals {
   subnet_ids = sort(data.aws_subnets.default.ids)
+  bucket_documentos = "${var.project_name}-docs-${data.aws_caller_identity.current.account_id}"
 
   # Texto que aparece como comentario sobre cada target en prometheus.yml.
   descripcion_plataforma = {
@@ -44,6 +45,7 @@ resource "aws_instance" "servidor" {
   associate_public_ip_address = true
 
   user_data = templatefile("${path.module}/scripts/user_data_servidor.sh.tftpl", {
+    bucket = local.bucket_documentos
     project_name = var.project_name
     perfiles     = each.value.perfiles
     region       = var.aws_region

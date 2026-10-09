@@ -114,29 +114,33 @@ jobs:
             echo "Bucket del state creado: $TF_STATE_BUCKET"
           fi
 
+      
       - name: terraform init
         run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Dejar de gestionar el recurso principal del bucket
+        run: |
+          if terraform state list | grep -Fxq 'aws_s3_bucket.documentos'; then
+            terraform state rm aws_s3_bucket.documentos
+          else
+            echo "El bucket ya no esta registrado como recurso de Terraform"
+          fi
+
+      - name: Verificar o crear el bucket de documentos
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          DOCS_BUCKET="andys-motors-docs-${ACCOUNT_ID}"
+
+          if aws s3api head-bucket --bucket "$DOCS_BUCKET" 2>/dev/null; then
+            echo "El bucket de documentos ya existe: $DOCS_BUCKET"
+          else
+            aws s3api create-bucket \
+              --bucket "$DOCS_BUCKET" \
+              --region us-east-1
+            echo "Bucket de documentos creado: $DOCS_BUCKET"
+          fi
 
       - name: terraform validate
         run: terraform validate
 
-      - name: terraform plan
-        if: env.ACCION == 'plan' || env.ACCION == 'apply'
-        run: terraform plan -input=false -out=tfplan
 
-      - name: terraform apply
-        if: env.ACCION == 'apply'
-        run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Publicar outputs en el resumen de la ejecucion
-        if: env.ACCION == 'apply' || env.ACCION == 'output'
-        run: |
-          {
-            echo "## Outputs de Terraform"
-            echo
-            echo '```'
-            terraform output -no-color
-            echo '```'
-            echo
-            echo "El arranque de cada servidor toma entre 3 y 6 minutos."
-          } >> "$GITHUB_STEP_SUMMARY"
