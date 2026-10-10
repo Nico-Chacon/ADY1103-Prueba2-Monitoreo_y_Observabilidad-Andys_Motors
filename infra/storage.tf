@@ -9,12 +9,12 @@
 # Sin esto, una politica mal escrita podria dejar documentos de clientes
 # accesibles desde Internet. Es la proteccion mas barata del proyecto.
 
-resource "aws_s3_bucket" "documentos" {
-  bucket = "andys-motors-documentos-chacon-ep2-20261010"
+locals {
+  documentos_bucket = "andys-motors-documentos-chacon-ep2-20261010"
 }
 
 resource "aws_s3_bucket_public_access_block" "documentos" {
-  bucket = aws_s3_bucket.documentos.id
+  bucket = local.documentos_bucket
 
   block_public_acls       = true
   block_public_policy     = true
@@ -23,7 +23,7 @@ resource "aws_s3_bucket_public_access_block" "documentos" {
 }
 
 resource "aws_s3_bucket_versioning" "documentos" {
-  bucket = aws_s3_bucket.documentos.id
+  bucket = local.documentos_bucket
 
   versioning_configuration {
     status = "Enabled"
@@ -31,7 +31,7 @@ resource "aws_s3_bucket_versioning" "documentos" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "documentos" {
-  bucket = aws_s3_bucket.documentos.id
+  bucket = local.documentos_bucket
 
   rule {
     apply_server_side_encryption_by_default {
@@ -71,7 +71,7 @@ data "archive_file" "demo" {
 }
 
 resource "aws_s3_object" "demo" {
-  bucket = aws_s3_bucket.documentos.id
+  bucket = local.documentos_bucket
   key    = "entorno/demo.zip"
   source = data.archive_file.demo.output_path
   etag   = data.archive_file.demo.output_md5
