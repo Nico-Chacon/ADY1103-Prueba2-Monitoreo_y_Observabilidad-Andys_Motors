@@ -1,162 +1,124 @@
-name: Terraform Destroy
+name: "Terraform Destroy"
 
-# Ejecucion MANUAL. Destruye TODO lo creado por Terraform Apply:
-# las 8 EC2, security groups, objetos y bucket de documentos.
-# NO borra el bucket del state (se creo a mano, fuera de Terraform).
-#
-# Requisito: credenciales vigentes de la sesion ACTUAL del Learner Lab
-# (secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN).
+# FASES DEL RETIRO DEL ENTORNO
+#   Fase 1  Preparacion (credenciales y state)
+#   Fase 2  Terraform destroy (o limpieza por etiquetas si el state se perdio)
+#   Fase 3  Confirmacion de que no quedaron instancias activas
+
 on:
   workflow_dispatch:
     inputs:
-      confirmar:
-        description: 'Escribe destruir para confirmar'
-        type: string
+      confirm_destroy:
+        description: 'Escribe "yes" para confirmar la destruccion de la infraestructura'
         required: true
+        type: string
 
 concurrency:
-  group: terraform-andys-motors
+  group: terraform-andysmotors
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  PROJECT_NAME: andys-motors
+  AWS_REGION: us-east-1
+  # Terraform exige las variables obligatorias tambien para destruir.
+  TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
+  TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+  TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+  TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN || 'andys-lab' }}
+  TF_VAR_key_name: vockey
+  TF_VAR_enable_monitoring: "true"
+  TF_VAR_demo_repo_url: ${{ vars.DEMO_REPO_URL || 'https://github.com/asanchezo-duoc/ADY1103-Activities' }}
+  TF_VAR_demo_repo_ref: ${{ vars.DEMO_REPO_REF || 'main' }}
+  TF_VAR_demo_repo_subdir: ${{ vars.DEMO_REPO_SUBDIR || 'Casos/AndysMotors/demo' }}
 
 jobs:
   destroy:
+    name: "Terraform Destroy"
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
+    timeout-minutes: 45
+    if: github.event.inputs.confirm_destroy == 'yes'
     defaults:
       run:
-        working-directory: infra
-
-    env:
-      CONFIRMAR: ${{ inputs.confirmar }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-      AWS_DEFAULT_REGION: us-east-1
-      # Para destruir, Terraform solo necesita que las variables existan y sean
-      # validas. Si falta algun secret se usan valores de relleno.
-      TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR || '0.0.0.0/32' }}
-      TF_VAR_db_password: ${{ secrets.DB_PASSWORD || 'Relleno.Destroy_123' }}
-      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD || 'Relleno.Destroy_123' }}
-      TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN || 'relleno-destroy' }}
-      TF_VAR_enable_monitoring: "true"
-      TF_VAR_topologia: ${{ vars.TOPOLOGIA || 'completa' }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'andys-motors-tfstate-chacon-ep2' }}
-      TF_IN_AUTOMATION: "true"
-      TF_INPUT: "0"
+        shell: bash
 
     steps:
-      - name: Descargar el repositorio
+      # ======================= FASE 1: PREPARACION ========================
+      - name: "[F1] Checkout"
         uses: actions/checkout@v4
 
-      # Falla con mensaje claro (antes el job quedaba "skipped" sin explicacion).
-      - name: Validar la confirmacion
-        run: |
-          valor="$(echo "$CONFIRMAR" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-          if [ "$valor" != "destruir" ]; then
-            echo "::error::Confirmacion incorrecta. Escribe exactamente: destruir"
-            exit 1
-          fi
-
-      - name: Normalizar finales de linea (CRLF a LF)
-        run: |
-          find .. -type f \
-            \( -name '*.sh' -o -name '*.tftpl' -o -name '*.tf' -o -name '*.py' \
-               -o -name '*.js' -o -name '*.yml' -o -name '*.cfg' -o -name '*.sql' \
-               -o -name '*.html' -o -name 'Dockerfile' \) \
-            -not -path '*/.git/*' -not -path '*/node_modules/*' \
-            -exec sed -i 's/\r$//' {} +
-
-      - name: Comprobar credenciales del lab
-        run: |
-          if ! aws sts get-caller-identity --query Account --output text; then
-            echo "::error::Credenciales vencidas. Inicia el lab, copia AWS Details > AWS CLI y actualiza los 3 secrets AWS_*."
-            exit 1
-          fi
-
-      - name: Instalar Terraform
+      - name: "[F1] Setup Terraform"
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.10.5
+          terraform_version: "~1.10"
           terraform_wrapper: false
 
-      - name: Comprobar que existe el bucket del state
+      - name: "[F1] Configure AWS Credentials (AWS Academy Learner Lab)"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: "[F1] Verificar credenciales vigentes"
         run: |
-          if ! aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
-            echo "::error::No existe el bucket del state $TF_STATE_BUCKET en esta cuenta. Si el lab es otra cuenta, los recursos hay que borrarlos a mano desde la consola."
-            exit 1
-          fi
+          aws sts get-caller-identity || { echo "::error::Credenciales vencidas: actualiza los secrets AWS_* desde AWS Details."; exit 1; }
 
-      # Candado huerfano de un run anterior cancelado o fallido.
-      - name: Liberar candado huerfano del state
-        run: aws s3 rm "s3://${TF_STATE_BUCKET}/andys-motors/terraform.tfstate.tflock" || true
+      - name: "[F1] Restaurar state de la ejecucion anterior"
+        id: state
+        uses: ./.github/actions/restaurar-state
+        with:
+          token: ${{ github.token }}
 
-      - name: terraform init
-        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+      # ======================= FASE 2: DESTROY ============================
+      - name: "[F2] Terraform Init"
+        if: steps.state.outputs.restaurado == 'true'
+        working-directory: ./infra
+        run: terraform init -input=false
 
-      # El bucket de documentos se gestiona por CLI (ver terraform-apply.yml).
-      # Si el state antiguo aun lo tiene, se saca para que no bloquee el destroy.
-      - name: Dejar de gestionar el recurso principal del bucket
+      - name: "[F2] Terraform Destroy"
+        id: destroy
+        if: steps.state.outputs.restaurado == 'true'
+        working-directory: ./infra
         run: |
-          if terraform state list | grep -Fxq 'aws_s3_bucket.documentos'; then
-            terraform state rm aws_s3_bucket.documentos
-          else
-            echo "El bucket no esta registrado como recurso de Terraform"
-          fi
+          # Se usa la misma topologia con la que se desplego.
+          export TF_VAR_topologia="$(cat topologia.txt 2>/dev/null || echo completa)"
+          echo "Topologia del state: $TF_VAR_topologia"
+          terraform destroy -input=false -auto-approve
 
-      - name: Recursos que se destruiran
-        run: terraform state list || true
-
-      - name: terraform destroy
-        run: terraform destroy -input=false -lock-timeout=120s -auto-approve
-
-      # Vacia el bucket de documentos (incluye versiones y delete markers) y lo borra.
-      - name: Vaciar y borrar el bucket de documentos
-        if: success()
+      - name: "[F2] Plan B: limpieza por etiquetas (no habia state)"
+        if: steps.state.outputs.restaurado != 'true'
         run: |
-          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-          B="andys-motors-docs-${ACCOUNT_ID}"
-          if ! aws s3api head-bucket --bucket "$B" 2>/dev/null; then
-            echo "El bucket $B ya no existe"
-            exit 0
-          fi
-          python3 - "$B" <<'PY'
-          import json, subprocess, sys
-          b = sys.argv[1]
-          def sh(*a):
-              return subprocess.run(a, capture_output=True, text=True)
-          while True:
-              r = sh("aws", "s3api", "list-object-versions", "--bucket", b,
-                     "--max-items", "1000", "--output", "json")
-              d = json.loads(r.stdout or "{}") or {}
-              objs = [{"Key": x["Key"], "VersionId": x["VersionId"]}
-                      for x in (d.get("Versions") or []) + (d.get("DeleteMarkers") or [])]
-              if not objs:
-                  break
-              r = sh("aws", "s3api", "delete-objects", "--bucket", b,
-                     "--delete", json.dumps({"Objects": objs, "Quiet": True}))
-              if r.returncode:
-                  print(r.stderr)
-                  sys.exit(1)
-          print("Bucket vacio")
-          PY
-          aws s3api delete-bucket --bucket "$B"
-          echo "Bucket $B eliminado"
+          echo "::warning::No se encontro state previo. Se eliminan los recursos buscandolos por la etiqueta Proyecto=${PROJECT_NAME}."
+          bash scripts/ci/limpieza-por-etiquetas.sh
 
-      # Si algo fallo, deja en el log lo que sigue vivo para diagnosticar.
-      - name: Diagnostico si fallo
-        if: failure()
+      # El state vacio tambien se sube: asi el proximo apply parte de cero.
+      - name: "[F2] Subir state posterior al destroy"
+        if: always() && steps.state.outputs.restaurado == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfstate
+          path: |
+            infra/terraform.tfstate
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # ================== FASE 3: CONFIRMACION ============================
+      - name: "[F3] Confirmar que no quedaron instancias del proyecto"
+        if: always()
         run: |
-          echo "=== EC2 que siguen vivas ==="
-          aws ec2 describe-instances \
-            --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-            --query "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key=='Name']|[0].Value]" \
-            --output table || true
-          echo "=== Security Groups andys-motors ==="
-          aws ec2 describe-security-groups --filters "Name=group-name,Values=andys-motors-*" \
-            --query "SecurityGroups[].[GroupId,GroupName]" --output table || true
-          echo "=== Recursos en el state ==="
-          terraform state list || true
+          RESTAN=$(aws ec2 describe-instances \
+            --filters "Name=tag:Proyecto,Values=${PROJECT_NAME}" \
+                      "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query 'Reservations[].Instances[].InstanceId' --output text | wc -w)
+          echo "Instancias del proyecto que siguen activas: $RESTAN"
+          {
+            echo "## Destroy finalizado"
+            echo "Instancias restantes del proyecto: **$RESTAN**"
+            echo "Revisa igualmente EC2 > Volumes por si quedo algun EBS suelto."
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ "$RESTAN" == "0" ]]

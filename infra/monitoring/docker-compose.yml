@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------------
+# Stack de observabilidad de AndysMotors (EP2 - ADY1103)
+#
+# Se levanta en la instancia "monitoreo" (EC2) con:  docker compose up -d
+# Variables (archivo .env generado por el user_data de Terraform):
+#   GRAFANA_ADMIN_PASSWORD   clave del usuario admin de Grafana
+#   PROM_RETENTION_TIME      cuanto tiempo guarda Prometheus los datos (rotacion)
+#   PROM_RETENTION_SIZE      tope de disco del TSDB (rotacion por tamano)
+# ---------------------------------------------------------------------------
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: andys-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Rotacion de datos: se descarta lo mas antiguo por tiempo o por tamano,
+      # lo que ocurra primero. Evita llenar el disco de 20 GB de la instancia.
+      - "--storage.tsdb.retention.time=${PROM_RETENTION_TIME:-15d}"
+      - "--storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-5GB}"
+      # Permite recargar la configuracion sin reiniciar: curl -X POST :9090/-/reload
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    # Para alcanzar el node-exporter que corre en la red del host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9090:9090"
+    networks: [monitoring]
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: andys-grafana
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Al entrar, Grafana muestra directamente el tablero de negocio.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/andys-negocio.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks: [monitoring]
+
+  # Sidecar que expone las metricas del sistema operativo de ESTA maquina.
+  # Usa la red del host para ver las interfaces y el disco reales.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: andys-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+      - "--web.listen-address=:9100"
+    volumes:
+      - /:/host:ro,rslave
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:

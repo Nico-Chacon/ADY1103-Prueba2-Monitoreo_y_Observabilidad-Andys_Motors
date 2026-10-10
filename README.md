@@ -1,18 +1,6 @@
-# Casos
-
-Casos de estudio de empresas ficticias utilizados como contexto de trabajo en la asignatura
-**ADY1103 - Monitoreo y Observabilidad**.
-
-Cada caso describe únicamente el **contexto de negocio y su arquitectura tecnológica**: la
-empresa, sus plataformas, la infraestructura desplegada y el comportamiento observado de su
-operación. Son el insumo sobre el cual se realizan los análisis de la asignatura.
-
-| Caso | Rubro | Plataformas principales |
-|---|---|---|
-| [`AndysMotors`](./AndysMotors) | Comercialización presencial de vehículos nuevos y usados | Sitio web público, CRM, stock, agendamiento, pagos y base de datos central sobre AWS (EC2, RDS, S3, Route 53) |
-
-> Todas las empresas descritas en esta carpeta son **ficticias** y fueron creadas con fines
-> académicos.
+> **EP2 · Despliegue automatizado:** para desplegar este caso con GitHub Actions (Terraform + Prometheus + Grafana
+> con `labsuser.pem`) y ordenar las evidencias del informe por fases, sigue la
+> [**GUIA_PASO_A_PASO.md**](./GUIA_PASO_A_PASO.md).
 
 # Caso: Andys Motors
 
@@ -41,6 +29,11 @@ agenden visitas.
 La venta propiamente tal es realizada por un ejecutivo comercial mediante el CRM, y finaliza
 mediante los sistemas de pago de la empresa.
 
+## 2. Arquitectura tecnológica actual
+
+La plataforma utiliza principalmente servicios desplegados en Amazon Web Services.
+
+![Arquitectura actual de Andys Motors](./assets/arquitectura-andys-motors.svg)
 
 ### Descripción
 
@@ -112,8 +105,8 @@ Prometheus ni Grafana**: expone la telemetría, y el stack de monitoreo se const
 ## Infraestructura del caso
 
 La carpeta [`infra/`](./infra) contiene el código **Terraform** que levanta esta misma
-arquitectura sobre una cuenta de **AWS Academy Learner Lab**: las instancias EC2, el bucket
-S3, los Security Groups y —opcionalmente— la base de datos RDS. Las plataformas del caso
+arquitectura sobre una cuenta de **AWS Academy Learner Lab**: las instancias EC2, los
+Security Groups y —opcionalmente— la base de datos RDS. Las plataformas del caso
 (sitio web, CRM y pagos) corren como contenedores Docker sobre la instancia de aplicación, y
 publican métricas a través de tres exporters.
 

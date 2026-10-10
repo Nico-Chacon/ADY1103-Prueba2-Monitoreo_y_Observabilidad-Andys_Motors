@@ -1,171 +1,257 @@
-name: Terraform Apply
+name: "Terraform Apply"
 
-# Ejecucion MANUAL: GitHub > Actions > "Terraform Apply" > Run workflow.
-#   plan   -> solo muestra que se crearia (no crea nada)
-#   apply  -> crea la infraestructura
-#   output -> muestra las IP/URLs de lo ya creado
-# Para destruir: usar el workflow "Terraform Destroy".
-#
-# Credenciales y passwords: Settings > Secrets and variables > Actions.
+# FASES DEL DESPLIEGUE (se corresponden con la guia GUIA_PASO_A_PASO.md)
+#   Fase 1  Preparacion y verificaciones previas (credenciales, llave, cupo)
+#   Fase 2  Inicializacion y validacion de Terraform
+#   Fase 3  Despliegue de la infraestructura (plan + apply)
+#   Fase 4  Verificacion del stack de observabilidad por SSH (labsuser.pem)
+#   Fase 5  Evidencias: URLs, prometheus.yml y estado de los targets
+
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform-apply.yml"
   workflow_dispatch:
     inputs:
-      accion:
-        description: "Que hacer con la infraestructura"
+      topologia:
+        description: "completa = 1 servidor por plataforma (8 EC2) | compacta = todo en uno (3 EC2)"
         type: choice
-        required: true
-        default: apply
-        options: [plan, apply, output]
+        options:
+          - completa
+          - compacta
+        default: completa
 
-# Evita dos ejecuciones simultaneas contra el mismo state.
+# Una sola ejecucion a la vez: dos "apply" simultaneos corromperian el state.
 concurrency:
-  group: terraform-andys-motors
+  group: terraform-andysmotors
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: read # necesario para descargar el artifact con el state
+
+env:
+  PROJECT_NAME: andys-motors
+  AWS_REGION: us-east-1
+  # --- Variables de Terraform (TF_VAR_*) ---
+  TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
+  TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+  TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+  TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN || 'andys-lab' }}
+  TF_VAR_key_name: vockey # par de llaves del Learner Lab; su llave privada es labsuser.pem
+  TF_VAR_topologia: ${{ inputs.topologia || 'completa' }}
+  TF_VAR_enable_monitoring: "true"
+  # Repositorio del que las EC2 descargan la carpeta demo/. Por defecto el del docente.
+  # Para usar el tuyo (debe ser publico): Settings > Variables > DEMO_REPO_URL, etc.
+  TF_VAR_demo_repo_url: ${{ vars.DEMO_REPO_URL || 'https://github.com/asanchezo-duoc/ADY1103-Activities' }}
+  TF_VAR_demo_repo_ref: ${{ vars.DEMO_REPO_REF || 'main' }}
+  TF_VAR_demo_repo_subdir: ${{ vars.DEMO_REPO_SUBDIR || 'Casos/AndysMotors/demo' }}
 
 jobs:
-  terraform:
+  apply:
+    name: "Terraform Apply"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 60
     defaults:
       run:
-        working-directory: infra
-
-    env:
-      ACCION: ${{ inputs.accion }}
-      # --- Credenciales temporales del Learner Lab (cambian en cada sesion) ---
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-      AWS_DEFAULT_REGION: us-east-1
-      # --- Variables de Terraform ---
-      TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
-      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-      TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN }}
-      # true: crea la EC2 de monitoreo (con Docker listo) y las reglas de Security
-      # Group para leer /metrics. Prometheus y Grafana se levantan A MANO por SSH.
-      TF_VAR_enable_monitoring: "true"
-      TF_VAR_topologia: ${{ vars.TOPOLOGIA || 'completa' }}
-      # --- Backend remoto (bucket creado a mano con aws s3api create-bucket) ---
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'andys-motors-tfstate-chacon-ep2' }}
-      TF_IN_AUTOMATION: "true"
-      TF_INPUT: "0"
+        shell: bash
 
     steps:
-      - name: Descargar el repositorio
+      # ======================= FASE 1: PREPARACION ========================
+      - name: "[F1] Checkout"
         uses: actions/checkout@v4
 
-      - name: Verificar que estan todos los secrets
-        run: |
-          faltan=0
-          verificar() {
-            if [ -z "${!1}" ]; then
-              echo "::error::Falta configurar $2 en Settings > Secrets and variables > Actions"
-              faltan=1
-            fi
-          }
-          verificar AWS_ACCESS_KEY_ID             "secret AWS_ACCESS_KEY_ID"
-          verificar AWS_SECRET_ACCESS_KEY         "secret AWS_SECRET_ACCESS_KEY"
-          verificar AWS_SESSION_TOKEN             "secret AWS_SESSION_TOKEN"
-          verificar TF_VAR_admin_cidr             "secret ADMIN_CIDR"
-          verificar TF_VAR_db_password            "secret DB_PASSWORD"
-          verificar TF_VAR_grafana_admin_password "secret GRAFANA_ADMIN_PASSWORD"
-          verificar TF_VAR_admin_token            "secret ADMIN_TOKEN"
-          exit $faltan
+      - name: "[F1] Setup Terraform"
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+          terraform_wrapper: false
 
-      # Finales de linea de Windows (CRLF) rompen los scripts de arranque.
-      - name: Normalizar finales de linea (CRLF a LF)
-        run: |
-          find .. -type f \
-            \( -name '*.sh' -o -name '*.tftpl' -o -name '*.tf' -o -name '*.py' \
-               -o -name '*.js' -o -name '*.yml' -o -name '*.cfg' -o -name '*.sql' \
-               -o -name '*.html' -o -name 'Dockerfile' \) \
-            -not -path '*/.git/*' -not -path '*/node_modules/*' \
-            -exec sed -i 's/\r$//' {} +
+      - name: "[F1] Configure AWS Credentials (AWS Academy Learner Lab)"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
 
-      - name: Comprobar credenciales del lab
+      - name: "[F1] Verificar credenciales vigentes"
         run: |
-          if aws sts get-caller-identity --query Account --output text > /dev/null; then
-            echo "Credenciales AWS validas"
-          else
-            echo "::error::Credenciales vencidas o mal copiadas. Actualiza los 3 secrets AWS_* con AWS Details > AWS CLI."
+          if ! aws sts get-caller-identity; then
+            echo "::error::Credenciales vencidas. Abre el Learner Lab > AWS Details > AWS CLI y actualiza los 3 secrets (scripts/actualizar-secrets.sh lo hace por ti)."
             exit 1
           fi
 
-      - name: Instalar Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: "[F1] Verificar llave vockey y secretos obligatorios"
+        env:
+          LABSUSER_PEM: ${{ secrets.LABSUSER_PEM }}
+        run: |
+          aws ec2 describe-key-pairs --key-names vockey --query 'KeyPairs[0].KeyName' --output text
+          faltan=0
+          for var in TF_VAR_admin_cidr TF_VAR_db_password TF_VAR_grafana_admin_password; do
+            if [[ -z "${!var}" ]]; then echo "::error::Falta el secret asociado a $var"; faltan=1; fi
+          done
+          if [[ "$LABSUSER_PEM" != *"BEGIN"*"PRIVATE KEY"* ]]; then
+            echo "::error::El secret LABSUSER_PEM no contiene la llave (pega TODO el contenido de labsuser.pem)."; faltan=1
+          fi
+          exit $faltan
+
+      - name: "[F1] Verificar cupo de instancias del laboratorio"
+        run: |
+          # El lab permite 9 instancias activas en total (las detenidas tambien cuentan).
+          # Se cuentan las que NO son de este proyecto, porque las nuestras se reutilizan.
+          OTRAS=$(aws ec2 describe-instances \
+            --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[].Instances[] | [?!(Tags[?Key=='Proyecto' && Value=='${PROJECT_NAME}'])].InstanceId" \
+            --output text | wc -w)
+          if [[ "$TF_VAR_topologia" == "compacta" ]]; then NECESITA=3; else NECESITA=8; fi
+          echo "Instancias ajenas al proyecto: $OTRAS | necesarias: $NECESITA | tope del lab: 9"
+          if (( OTRAS + NECESITA > 9 )); then
+            echo "::error::No hay cupo. Termina instancias viejas en la consola EC2 (detenerlas no libera cupo) o usa topologia 'compacta'."
+            exit 1
+          fi
+
+      - name: "[F1] Restaurar state de la ejecucion anterior"
+        uses: ./.github/actions/restaurar-state
         with:
-          terraform_version: 1.10.5
-          terraform_wrapper: false
+          token: ${{ github.token }}
 
-      # Si el bucket del state ya existe (lo creaste a mano) no hace nada.
-      - name: Verificar / crear el bucket del state
-        run: |
-          if aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
-            echo "El bucket del state ya existe: $TF_STATE_BUCKET"
-          else
-            aws s3api create-bucket --bucket "$TF_STATE_BUCKET" --region us-east-1
-            aws s3api put-bucket-versioning --bucket "$TF_STATE_BUCKET" \
-              --versioning-configuration Status=Enabled || true
-            echo "Bucket del state creado: $TF_STATE_BUCKET"
-          fi
+      # ===================== FASE 2: INIT Y VALIDACION ====================
+      - name: "[F2] Terraform Init"
+        working-directory: ./infra
+        run: terraform init -input=false
 
-
-      # Un run cancelado o con credenciales vencidas puede dejar un candado
-      # huerfano en S3 ("Error acquiring the state lock"). Como el grupo
-      # "concurrency" garantiza que no hay otro run activo, es seguro borrarlo.
-      - name: Liberar candado huerfano del state
-        run: aws s3 rm "s3://${TF_STATE_BUCKET}/andys-motors/terraform.tfstate.tflock" || true
-
-      - name: terraform init
-        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
-
-      - name: Dejar de gestionar el recurso principal del bucket
-        run: |
-          if terraform state list | grep -Fxq 'aws_s3_bucket.documentos'; then
-            terraform state rm aws_s3_bucket.documentos
-          else
-            echo "El bucket ya no esta registrado como recurso de Terraform"
-          fi
-
-      - name: Verificar o crear el bucket de documentos
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          DOCS_BUCKET="andys-motors-docs-${ACCOUNT_ID}"
-
-          if aws s3api head-bucket --bucket "$DOCS_BUCKET" 2>/dev/null; then
-            echo "El bucket de documentos ya existe: $DOCS_BUCKET"
-          else
-            aws s3api create-bucket \
-              --bucket "$DOCS_BUCKET" \
-              --region us-east-1
-            echo "Bucket de documentos creado: $DOCS_BUCKET"
-          fi
-
-      - name: terraform validate
+      - name: "[F2] Terraform Validate"
+        working-directory: ./infra
         run: terraform validate
 
-      - name: terraform plan
-        if: env.ACCION == 'plan' || env.ACCION == 'apply'
-        run: terraform plan -input=false -lock-timeout=120s -out=tfplan
+      - name: "[F2] Terraform Format Check"
+        working-directory: ./infra
+        continue-on-error: true
+        run: terraform fmt -check -recursive
 
-      - name: terraform apply
-        if: env.ACCION == 'apply'
-        run: terraform apply -input=false -lock-timeout=120s -auto-approve tfplan
+      # ================== FASE 3: PLAN Y APPLY ============================
+      - name: "[F3] Terraform Plan"
+        working-directory: ./infra
+        run: terraform plan -input=false -out=tfplan
 
-      - name: Publicar outputs en el resumen de la ejecucion
-        if: env.ACCION == 'apply' || env.ACCION == 'output'
+      - name: "[F3] Terraform Apply"
+        id: tfapply
+        working-directory: ./infra
+        run: terraform apply -input=false -auto-approve tfplan
+
+      # El state se guarda SIEMPRE, incluso si el apply fallo a medias, para que
+      # el destroy sepa que recursos quedaron creados.
+      - name: "[F3] Preparar state para guardar"
+        id: guardar
+        if: always()
+        run: |
+          # Solo se sube si existe un state: un artifact vacio taparia al bueno.
+          if [[ -f infra/terraform.tfstate ]]; then
+            echo "subir=true" >> "$GITHUB_OUTPUT"
+            # La topologia solo se actualiza si el apply llego a ejecutarse.
+            if [[ "${{ steps.tfapply.outcome }}" != "skipped" ]]; then
+              echo "${TF_VAR_topologia}" > infra/topologia.txt
+            fi
+          fi
+
+      - name: "[F3] Subir state (artifact)"
+        if: always() && steps.guardar.outputs.subir == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfstate
+          path: |
+            infra/terraform.tfstate
+            infra/topologia.txt
+          retention-days: 90
+          if-no-files-found: ignore
+
+      # ============ FASE 4: VERIFICACION POR SSH (labsuser.pem) ===========
+      - name: "[F4] Preparar labsuser.pem"
+        env:
+          LABSUSER_PEM: ${{ secrets.LABSUSER_PEM }}
+        run: |
+          umask 077
+          printf '%s\n' "$LABSUSER_PEM" > labsuser.pem
+          chmod 400 labsuser.pem
+          ssh-keygen -y -f labsuser.pem > /dev/null && echo "labsuser.pem valido"
+
+      - name: "[F4] Abrir SSH temporal para este runner"
+        run: bash scripts/ci/sg-ssh.sh abrir "${PROJECT_NAME}-monitoreo-sg"
+
+      - name: "[F4] Esperar Prometheus + Grafana y revisar targets"
+        working-directory: ./infra
+        run: |
+          MON_IP="$(terraform output -raw monitoreo_ip_publica)"
+          SSH=(ssh -i ../labsuser.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+               -o ConnectTimeout=10 -o ServerAliveInterval=15 "ec2-user@${MON_IP}")
+
+          echo "Esperando que arranque el stack en ${MON_IP} (cloud-init, hasta 15 min)..."
+          for i in $(seq 1 60); do
+            if "${SSH[@]}" 'test -f /var/lib/andys-monitoring-ready' 2>/dev/null; then
+              echo "Stack listo (intento $i)."; break
+            fi
+            sleep 15
+          done
+
+          echo "Esperando que los targets pasen a UP (hasta 10 min)..."
+          for i in $(seq 1 40); do
+            "${SSH[@]}" 'curl -s localhost:9090/api/v1/targets?state=active' > ../targets.json 2>/dev/null || true
+            ABAJO=$(jq '[.data.activeTargets[]? | select(.health != "up")] | length' ../targets.json 2>/dev/null || echo 99)
+            TOTAL=$(jq '[.data.activeTargets[]?] | length' ../targets.json 2>/dev/null || echo 0)
+            echo "targets: $TOTAL totales, $ABAJO no-UP"
+            if [[ "$TOTAL" -gt 0 && "$ABAJO" == "0" ]]; then break; fi
+            sleep 15
+          done
+
+          "${SSH[@]}" 'cd /opt/monitoring && sudo docker compose ps' | tee ../docker-compose-ps.txt || true
+
+      - name: "[F4] Cerrar SSH temporal"
+        if: always()
+        run: bash scripts/ci/sg-ssh.sh cerrar "${PROJECT_NAME}-monitoreo-sg"
+
+      # ================== FASE 5: EVIDENCIAS Y RESUMEN ====================
+      - name: "[F5] Exportar prometheus.yml desplegado"
+        working-directory: ./infra
+        run: terraform output -raw prometheus_yml > ../prometheus.yml
+
+      - name: "[F5] Resumen en la pestana Summary"
+        working-directory: ./infra
         run: |
           {
-            echo "## Outputs de Terraform"
-            echo
-            echo '```'
-            terraform output -no-color
-            echo '```'
-            echo
-            echo "El arranque de cada servidor toma entre 3 y 6 minutos."
+            echo "## AndysMotors desplegado"
+            echo ""
+            echo "| Recurso | URL |"
+            echo "|---|---|"
+            echo "| Sitio publico (HAProxy) | http://$(terraform output -raw borde_ip_publica) |"
+            echo "| Estado del balanceador | http://$(terraform output -raw borde_ip_publica):8404/stats |"
+            echo "| **Prometheus** | $(terraform output -raw prometheus_url) |"
+            echo "| **Grafana** (usuario admin) | $(terraform output -raw grafana_url) |"
+            echo ""
+            echo "### Targets de Prometheus"
+            echo ""
+            echo "| Job | Instancia | Estado |"
+            echo "|---|---|---|"
+            jq -r '.data.activeTargets[]? | "| \(.labels.job) | \(.labels.instance) | \(.health) |"' ../targets.json 2>/dev/null || true
+            echo ""
+            echo "> Accesos web (Grafana/Prometheus/SSH) solo desde la IP definida en el secret ADMIN_CIDR."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[F5] Subir evidencias (prometheus.yml, targets)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencias-ep2
+          path: |
+            prometheus.yml
+            targets.json
+            docker-compose-ps.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: "[F5] Limpiar llave del runner"
+        if: always()
+        run: rm -f labsuser.pem

@@ -47,19 +47,6 @@ resource "aws_vpc_security_group_ingress_rule" "borde_metricas_monitoreo" {
   ip_protocol                  = "tcp"
 }
 
-# El monitoreo tambien genera trafico de prueba (generar_trafico.py) contra el
-# balanceador usando su IP privada.
-resource "aws_vpc_security_group_ingress_rule" "borde_http_monitoreo" {
-  count = var.enable_monitoring ? 1 : 0
-
-  security_group_id            = aws_security_group.borde.id
-  description                  = "Trafico de prueba desde la EC2 de monitoreo"
-  referenced_security_group_id = aws_security_group.monitoreo[0].id
-  from_port                    = 80
-  to_port                      = 80
-  ip_protocol                  = "tcp"
-}
-
 resource "aws_vpc_security_group_ingress_rule" "borde_ssh" {
   security_group_id = aws_security_group.borde.id
   description       = "SSH de administracion"
@@ -109,18 +96,6 @@ resource "aws_vpc_security_group_ingress_rule" "app_desde_monitoreo" {
   referenced_security_group_id = aws_security_group.monitoreo[0].id
   from_port                    = each.value
   to_port                      = each.value
-  ip_protocol                  = "tcp"
-}
-
-# El proveedor externo de pagos (gateway) tambien expone /metrics en el 8086.
-resource "aws_vpc_security_group_ingress_rule" "app_gateway_monitoreo" {
-  count = var.enable_monitoring ? 1 : 0
-
-  security_group_id            = aws_security_group.app.id
-  description                  = "Scraping de /metrics del gateway externo desde el monitoreo"
-  referenced_security_group_id = aws_security_group.monitoreo[0].id
-  from_port                    = 8086
-  to_port                      = 8086
   ip_protocol                  = "tcp"
 }
 
@@ -240,4 +215,44 @@ resource "aws_vpc_security_group_egress_rule" "monitoreo_salida" {
   description       = "Salida a Internet y scraping de las plataformas"
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
+}
+
+# --- Exporters (sidecars) -----------------------------------------------------
+# Prometheus (en la instancia de monitoreo) necesita alcanzar:
+#   9100  node_exporter, que corre en TODOS los servidores
+#   9187  postgres_exporter, junto a la base de datos
+# Se referencia el Security Group de monitoreo y no una IP, igual que el resto.
+resource "aws_vpc_security_group_ingress_rule" "borde_node_exporter" {
+  count = var.enable_monitoring ? 1 : 0
+
+  security_group_id            = aws_security_group.borde.id
+  description                  = "node_exporter desde el monitoreo"
+  referenced_security_group_id = aws_security_group.monitoreo[0].id
+  from_port                    = 9100
+  to_port                      = 9100
+  ip_protocol                  = "tcp"
+}
+
+# En topologia compacta la base de datos comparte maquina con las aplicaciones,
+# por eso el Security Group de aplicacion tambien abre el 9187.
+resource "aws_vpc_security_group_ingress_rule" "app_exporters" {
+  for_each = var.enable_monitoring ? toset(["9100", "9187"]) : toset([])
+
+  security_group_id            = aws_security_group.app.id
+  description                  = "Exporter ${each.value} desde el monitoreo"
+  referenced_security_group_id = aws_security_group.monitoreo[0].id
+  from_port                    = tonumber(each.value)
+  to_port                      = tonumber(each.value)
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "datos_exporters" {
+  for_each = var.enable_monitoring ? toset(["9100", "9187"]) : toset([])
+
+  security_group_id            = aws_security_group.datos.id
+  description                  = "Exporter ${each.value} desde el monitoreo"
+  referenced_security_group_id = aws_security_group.monitoreo[0].id
+  from_port                    = tonumber(each.value)
+  to_port                      = tonumber(each.value)
+  ip_protocol                  = "tcp"
 }

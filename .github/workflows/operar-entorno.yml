@@ -1,0 +1,177 @@
+name: "Operar entorno (trafico y fallas)"
+
+# Este workflow NO crea ni destruye infraestructura. Sirve para dejar el entorno
+# listo para las capturas de la evaluacion:
+#   - generar-trafico : corre el script Python del docente dentro del balanceador,
+#                       con la curva horaria del negocio (metricas constantes).
+#   - detener-trafico : detiene el generador.
+#   - activar/desactivar-falla, apagar-fallas, listar-fallas : escenarios de falla
+#                       (por ejemplo agenda_silenciosa) para mostrar en Grafana la
+#                       brecha entre "solicitados" y "confirmados".
+#   - estado          : contenedores y generador en ejecucion.
+# El acceso es por SSH con labsuser.pem, abriendo el puerto 22 solo para el runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      accion:
+        description: "Que hacer"
+        type: choice
+        required: true
+        options:
+          - estado
+          - generar-trafico
+          - detener-trafico
+          - listar-fallas
+          - activar-falla
+          - desactivar-falla
+          - apagar-fallas
+        default: generar-trafico
+      escenario:
+        description: "Escenario de falla (solo para activar/desactivar-falla)"
+        type: choice
+        options:
+          - agenda_silenciosa
+          - crm_huerfano
+          - stock_desactualizado
+          - gateway_lento
+          - gateway_rechazos
+          - db_lenta
+        default: agenda_silenciosa
+      hora_inicio:
+        description: "Hora simulada de inicio (0-24). 10 = horario comercial"
+        type: string
+        default: "10"
+      factor:
+        description: "Aceleracion del tiempo. 1 = tiempo real (trafico constante). 60 = 1 min real = 1 hora simulada"
+        type: string
+        default: "1"
+      duracion:
+        description: "Duracion del generador en segundos"
+        type: string
+        default: "3600"
+      rps_peak:
+        description: "Peticiones por segundo en el peak"
+        type: string
+        default: "8"
+
+concurrency:
+  group: operar-entorno
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_NAME: andys-motors
+  AWS_REGION: us-east-1
+
+jobs:
+  operar:
+    name: "Operar entorno"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+
+      - name: "Configure AWS Credentials (AWS Academy Learner Lab)"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: "Restaurar state (para conocer la IP del balanceador)"
+        id: state
+        uses: ./.github/actions/restaurar-state
+        with:
+          token: ${{ github.token }}
+
+      - name: "Obtener IP publica del balanceador"
+        id: borde
+        run: |
+          if [[ "${{ steps.state.outputs.restaurado }}" != "true" ]]; then
+            echo "::error::No hay state: primero ejecuta 'Terraform Apply'."; exit 1
+          fi
+          IP="$(jq -r '.outputs.borde_ip_publica.value // empty' infra/terraform.tfstate)"
+          [[ -n "$IP" ]] || { echo "::error::El state no tiene borde_ip_publica (el entorno esta destruido?)."; exit 1; }
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "Balanceador: $IP"
+
+      - name: "Preparar labsuser.pem"
+        env:
+          LABSUSER_PEM: ${{ secrets.LABSUSER_PEM }}
+        run: |
+          umask 077
+          printf '%s\n' "$LABSUSER_PEM" > labsuser.pem
+          chmod 400 labsuser.pem
+
+      - name: "Abrir SSH temporal para este runner"
+        run: bash scripts/ci/sg-ssh.sh abrir "${PROJECT_NAME}-borde-sg"
+
+      - name: "Ejecutar accion en el balanceador"
+        env:
+          ACCION: ${{ inputs.accion }}
+          ESCENARIO: ${{ inputs.escenario }}
+          HORA_INICIO: ${{ inputs.hora_inicio }}
+          FACTOR: ${{ inputs.factor }}
+          DURACION: ${{ inputs.duracion }}
+          RPS_PEAK: ${{ inputs.rps_peak }}
+          BORDE_IP: ${{ steps.borde.outputs.ip }}
+        run: |
+          # Los valores numericos se validan: viajan a un comando remoto.
+          for v in HORA_INICIO FACTOR DURACION RPS_PEAK; do
+            [[ "${!v}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "::error::$v invalido: ${!v}"; exit 1; }
+          done
+
+          ssh -i labsuser.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=15 "ec2-user@${BORDE_IP}" \
+              sudo bash -s -- "$ACCION" "$ESCENARIO" "$HORA_INICIO" "$FACTOR" "$DURACION" "$RPS_PEAK" <<'REMOTO'
+          ACCION="$1"; ESCENARIO="$2"; HORA="$3"; FACTOR="$4"; DURACION="$5"; RPS="$6"
+          cd /opt/andys
+
+          # Direcciones privadas de las plataformas: ya estan en el .env del balanceador.
+          set -a; . ./.env; set +a
+          export STOCK_ADDR="$STOCK_HOST" AGENDA_ADDR="$AGENDA_HOST" CRM_ADDR="$CRM_HOST"
+          export PAGOS_ADDR="$PAGOS_HOST" GATEWAY_ADDR="$GATEWAY_HOST"
+
+          case "$ACCION" in
+            estado)
+              docker ps --format 'table {{.Names}}\t{{.Status}}'
+              echo "--- generador de trafico ---"
+              pgrep -af generar_trafico.py || echo "no esta en ejecucion"
+              tail -n 5 /tmp/trafico.log 2>/dev/null || true
+              ;;
+            generar-trafico)
+              pkill -f generar_trafico.py || true
+              nohup python3 scripts/generar_trafico.py --url http://localhost \
+                --hora-inicio "$HORA" --factor "$FACTOR" --duracion "$DURACION" --rps-peak "$RPS" \
+                > /tmp/trafico.log 2>&1 < /dev/null &
+              sleep 8
+              echo "Generador lanzado (inicio ${HORA}h, factor x${FACTOR}, ${DURACION}s, peak ${RPS} req/s):"
+              tail -n 8 /tmp/trafico.log
+              ;;
+            detener-trafico)
+              pkill -f generar_trafico.py && echo "Generador detenido" || echo "No habia generador en ejecucion"
+              ;;
+            listar-fallas)   bash scripts/escenario.sh listar ;;
+            activar-falla)   bash scripts/escenario.sh activar "$ESCENARIO" ;;
+            desactivar-falla) bash scripts/escenario.sh desactivar "$ESCENARIO" ;;
+            apagar-fallas)   bash scripts/escenario.sh apagar-todo ;;
+          esac
+          REMOTO
+
+      - name: "Cerrar SSH temporal"
+        if: always()
+        run: bash scripts/ci/sg-ssh.sh cerrar "${PROJECT_NAME}-borde-sg"
+
+      - name: "Limpiar llave del runner"
+        if: always()
+        run: rm -f labsuser.pem

@@ -1,0 +1,12 @@
+# Carga automaticamente los dashboards JSON de /var/lib/grafana/dashboards.
+apiVersion: 1
+
+providers:
+  - name: "AndysMotors"
+    folder: "AndysMotors"
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

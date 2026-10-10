@@ -13,16 +13,6 @@
 
 locals {
   subnet_ids = sort(data.aws_subnets.default.ids)
-  bucket_documentos = "${var.project_name}-docs-${data.aws_caller_identity.current.account_id}"
-
-  # Texto que aparece como comentario sobre cada target en prometheus.yml.
-  descripcion_plataforma = {
-    web    = "Sitio web publico (catalogo, contacto, agendamiento)"
-    stock  = "Consulta de stock de vehiculos"
-    agenda = "Agendamiento de visitas (solicitados vs confirmados)"
-    crm    = "CRM y ventas (oportunidades creadas vs vinculadas)"
-    pagos  = "Sistema de pagos (pagos por resultado y monto)"
-  }
 
   # Security Group que corresponde a cada rol.
   sg_de_rol = {
@@ -45,12 +35,11 @@ resource "aws_instance" "servidor" {
   associate_public_ip_address = true
 
   user_data = templatefile("${path.module}/scripts/user_data_servidor.sh.tftpl", {
-    bucket = local.bucket_documentos
     project_name = var.project_name
     perfiles     = each.value.perfiles
-    region       = var.aws_region
-    bucket       = local.bucket_documentos
-    objeto       = aws_s3_object.demo.key
+    repo_url     = var.demo_repo_url
+    repo_ref     = var.demo_repo_ref
+    repo_subdir  = var.demo_repo_subdir
 
     db_host     = local.db_host
     db_name     = var.db_name
@@ -92,54 +81,37 @@ resource "aws_instance" "servidor" {
     Rol      = each.value.rol
     Perfiles = each.value.perfiles
   }
-
-  # El contenido del entorno debe estar en el bucket antes de que la maquina
-  # intente descargarlo.
-  depends_on = [aws_s3_object.demo]
 }
 
 # ---------------------------------------------------------------------------
-# Stack de monitoreo de referencia (opcional)
+# Stack de monitoreo propio de la EP2: Prometheus + Grafana + node_exporter
 # ---------------------------------------------------------------------------
 resource "aws_instance" "monitoreo" {
   count = var.enable_monitoring ? 1 : 0
 
   ami                         = data.aws_ami.al2023.id
-  instance_type               = var.instance_type
+  instance_type               = var.monitoring_instance_type
   subnet_id                   = local.subnet_ids[0]
   vpc_security_group_ids      = [aws_security_group.monitoreo[0].id]
   iam_instance_profile        = data.aws_iam_instance_profile.lab.name
   key_name                    = var.key_name
   associate_public_ip_address = true
 
-  user_data = templatefile("${path.module}/scripts/user_data_monitoring.sh.tftpl", {
-    project_name     = var.project_name
-    grafana_password = var.grafana_admin_password
-    borde_ip         = local.ips["borde"]
-    pagos_ip         = local.host_de["pagos"]
-    region           = var.aws_region
-    bucket           = local.bucket_documentos
-    objeto           = aws_s3_object.demo.key
-
-    # Bloque YAML de targets ya indentado y comentado, para que el
-    # prometheus.yml quede valido y autoexplicativo.
-    targets_plataformas = join("\n", [
-      for plataforma, puerto in local.puertos :
-      "      # ${plataforma}: ${local.descripcion_plataforma[plataforma]}\n      - targets: [\"${local.host_de[plataforma]}:${puerto}\"]\n        labels:\n          plataforma: \"${plataforma}\""
-    ])
-
-    # Variables de entorno para escenario.sh y generar_trafico.py (se usan
-    # desde la propia EC2 de monitoreo, por IP privada).
-    entorno_env = join("\n", [
-      "export BORDE_ADDR=${local.ips["borde"]}",
-      "export STOCK_ADDR=${local.host_de["stock"]}",
-      "export AGENDA_ADDR=${local.host_de["agenda"]}",
-      "export CRM_ADDR=${local.host_de["crm"]}",
-      "export PAGOS_ADDR=${local.host_de["pagos"]}",
-      "export GATEWAY_ADDR=${local.host_de["pagos"]}",
-      "export ANDYS_ADMIN_TOKEN=${var.admin_token}",
-    ])
-  })
+  # El script lleva incrustados prometheus.yml, docker-compose, el datasource y
+  # los dashboards. Se comprime con gzip (cloud-init lo descomprime solo) para
+  # no pasar el limite de 16 KB que AWS impone al user_data.
+  user_data_base64 = base64gzip(templatefile("${path.module}/scripts/user_data_monitoring.sh.tftpl", {
+    project_name      = var.project_name
+    grafana_password  = var.grafana_admin_password
+    retention_time    = var.prometheus_retention_time
+    retention_size    = var.prometheus_retention_size
+    prometheus_yml    = local.prometheus_yml
+    docker_compose    = file("${path.module}/monitoring/docker-compose.yml")
+    datasource_yml    = file("${path.module}/monitoring/grafana/provisioning/datasources/datasource.yml")
+    dashboards_yml    = file("${path.module}/monitoring/grafana/provisioning/dashboards/dashboards.yml")
+    dashboard_tecnico = file("${path.module}/monitoring/grafana/dashboards/andys-tecnico.json")
+    dashboard_negocio = file("${path.module}/monitoring/grafana/dashboards/andys-negocio.json")
+  }))
 
   user_data_replace_on_change = true
 
@@ -159,7 +131,4 @@ resource "aws_instance" "monitoreo" {
     Name = "${var.project_name}-monitoreo"
     Rol  = "monitoreo"
   }
-
-  # El zip del entorno debe estar en S3 antes de que la maquina lo descargue.
-  depends_on = [aws_s3_object.demo]
 }

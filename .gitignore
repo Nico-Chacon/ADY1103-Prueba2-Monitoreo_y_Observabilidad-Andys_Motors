@@ -1,15 +1,20 @@
-# Credenciales y llaves: NUNCA al repositorio
-.aws-credentials
+# Llaves y credenciales: NUNCA al repositorio
 *.pem
-.env
+.aws-credentials
+terraform.tfvars
+*.auto.tfvars
 
 # Terraform
-terraform.tfvars
+.terraform/
 *.tfstate
 *.tfstate.*
-.terraform/
+*.tfplan
 tfplan
 crash.log
+# .terraform.lock.hcl SI se versiona (fija la version del proveedor AWS)
 
-# Node
-node_modules/
+# Temporales del runner / locales
+targets.json
+docker-compose-ps.txt
+infra/topologia.txt
+__pycache__/

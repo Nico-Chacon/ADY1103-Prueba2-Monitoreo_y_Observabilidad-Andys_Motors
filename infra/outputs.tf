@@ -66,7 +66,7 @@ output "endpoints_de_metricas" {
 
 output "grafana" {
   description = "Grafana de referencia (usuario admin). Solo existe si enable_monitoring = true."
-  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:3000" : "monitoreo deshabilitado"
+  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:3000" : "monitoreo de referencia deshabilitado: el stack lo construye el estudiante"
 }
 
 output "prometheus" {
@@ -74,19 +74,29 @@ output "prometheus" {
   value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:9090/targets" : "monitoreo de referencia deshabilitado"
 }
 
-output "ssh_monitoreo" {
-  description = "Comando para entrar por SSH a la EC2 de monitoreo desde tu CMD."
-  value       = var.enable_monitoring ? "ssh -i labsuser.pem ec2-user@${aws_instance.monitoreo[0].public_ip}" : "monitoreo deshabilitado"
+output "grafana_url" {
+  description = "URL de Grafana (solo URL, sin texto). Vacia si el monitoreo esta apagado."
+  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:3000" : ""
 }
 
-output "ip_publica_monitoreo" {
-  description = "IP publica de la EC2 de monitoreo (Prometheus :9090, Grafana :3000)."
-  value       = var.enable_monitoring ? aws_instance.monitoreo[0].public_ip : "monitoreo deshabilitado"
+output "prometheus_url" {
+  description = "URL de Prometheus (solo URL, sin texto). Vacia si el monitoreo esta apagado."
+  value       = var.enable_monitoring ? "http://${aws_instance.monitoreo[0].public_ip}:9090" : ""
 }
 
-output "bucket_documentos" {
-  description = "Bucket S3 con los documentos del negocio y el paquete del entorno."
-  value       = local.bucket_documentos
+output "monitoreo_ip_publica" {
+  description = "IP publica de la instancia de monitoreo (para SSH con labsuser.pem)."
+  value       = var.enable_monitoring ? aws_instance.monitoreo[0].public_ip : ""
+}
+
+output "borde_ip_publica" {
+  description = "IP publica del balanceador (para generar trafico y SSH con labsuser.pem)."
+  value       = aws_instance.servidor["borde"].public_ip
+}
+
+output "prometheus_yml" {
+  description = "Contenido exacto del prometheus.yml desplegado (entregable independiente de la EP2)."
+  value       = local.prometheus_yml
 }
 
 output "rds_endpoint" {
@@ -99,7 +109,7 @@ output "siguientes_pasos" {
   value       = <<-EOT
 
     1. El arranque de cada servidor toma entre 3 y 6 minutos: instala Docker,
-       descarga el entorno desde S3 y construye la imagen de las aplicaciones.
+       descarga el entorno desde GitHub y construye la imagen de las aplicaciones.
        Que la instancia diga "running" no significa que ya este lista.
 
     2. Revisar el avance en cualquier servidor:

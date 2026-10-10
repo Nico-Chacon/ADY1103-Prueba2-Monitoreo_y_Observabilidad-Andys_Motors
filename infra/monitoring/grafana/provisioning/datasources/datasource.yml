@@ -1,0 +1,16 @@
+# Aprovisionamiento automatico del Datasource de Prometheus en Grafana.
+# Con esto, al iniciar Grafana la conexion ya existe y "Save & test" responde OK.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    # "prometheus" es el nombre del servicio en la red de Docker Compose.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s   # igual al scrape_interval de prometheus.yml
+      httpMethod: POST

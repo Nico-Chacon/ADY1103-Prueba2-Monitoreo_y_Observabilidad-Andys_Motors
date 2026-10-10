@@ -1,0 +1,37 @@
+name: "Restaurar state de Terraform"
+description: >
+  Descarga el ultimo artifact "tfstate" (el state que dejo la ejecucion anterior de
+  apply o destroy) dentro de infra/. Como el Learner Lab no ofrece backend remoto,
+  el state viaja como artifact de GitHub entre ejecuciones.
+
+inputs:
+  token:
+    description: "GITHUB_TOKEN con permiso actions:read"
+    required: true
+
+outputs:
+  restaurado:
+    description: "true si se encontro y descargo un state previo"
+    value: ${{ steps.restaurar.outputs.restaurado }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: restaurar
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        ART_ID="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=tfstate&per_page=30" \
+          --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | .[0].id // empty')"
+        if [[ -z "$ART_ID" ]]; then
+          echo "No hay state previo: se parte de cero."
+          echo "restaurado=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Restaurando state desde el artifact $ART_ID"
+        gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ART_ID}/zip" > /tmp/tfstate.zip
+        unzip -o /tmp/tfstate.zip -d infra
+        echo "restaurado=true" >> "$GITHUB_OUTPUT"
+        ls -la infra | grep -E "tfstate|topologia" || true

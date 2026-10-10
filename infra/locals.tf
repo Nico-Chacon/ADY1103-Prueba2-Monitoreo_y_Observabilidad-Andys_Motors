@@ -79,4 +79,38 @@ locals {
     for plataforma, puerto in local.puertos :
     "${local.host_de[plataforma]}:${puerto}"
   ]
+
+  # --- prometheus.yml ---------------------------------------------------------
+  # Los bloques de targets se arman ya indentados para que el YAML quede valido
+  # (ver infra/monitoring/prometheus.yml.tftpl).
+  prom_targets_plataformas = join("\n", [
+    for plataforma, puerto in local.puertos :
+    "      - targets: [\"${local.host_de[plataforma]}:${puerto}\"]\n        labels:\n          plataforma: \"${plataforma}\""
+  ])
+
+  # node_exporter corre como sidecar en TODOS los servidores (puerto 9100).
+  prom_targets_nodos = join("\n", [
+    for nombre in sort(keys(local.servidores)) :
+    "      - targets: [\"${local.ips[nombre]}:9100\"]\n        labels:\n          servidor: \"${nombre}\""
+  ])
+
+  # postgres_exporter solo existe cuando la base corre como contenedor (sin RDS).
+  prom_postgres_job = var.enable_rds ? "" : join("\n", [
+    "  # ------------------------------------------------------------------------",
+    "  # 5. postgres_exporter (sidecar junto a PostgreSQL): conexiones, transacciones,",
+    "  #    tamano de la base y estado (pg_up).",
+    "  # ------------------------------------------------------------------------",
+    "  - job_name: \"postgres\"",
+    "    static_configs:",
+    "      - targets: [\"${local.db_host}:9187\"]",
+    "        labels:",
+    "          rol: \"base-de-datos\"",
+  ])
+
+  prometheus_yml = templatefile("${path.module}/monitoring/prometheus.yml.tftpl", {
+    targets_plataformas = local.prom_targets_plataformas
+    targets_nodos       = local.prom_targets_nodos
+    postgres_job        = local.prom_postgres_job
+    borde_ip            = local.ips["borde"]
+  })
 }

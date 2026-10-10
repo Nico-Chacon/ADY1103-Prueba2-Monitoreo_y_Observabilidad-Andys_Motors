@@ -22,8 +22,12 @@ variable "project_name" {
 variable "key_name" {
   description = <<-EOT
     Nombre del par de llaves EC2 para acceder por SSH. El Learner Lab ya trae una
-    llamada "vockey" (se descarga desde el panel AWS Details). No se crea aqui
-    porque el lab no permite gestionar llaves de forma consistente.
+    llamada "vockey" cuya llave privada es el archivo labsuser.pem (se descarga
+    desde el panel AWS Details > Download PEM). No se crea aqui porque el lab no
+    permite gestionar llaves de forma consistente.
+
+    Uso del .pem:  ssh -i labsuser.pem ec2-user@<IP_PUBLICA>
+    En GitHub Actions el contenido del archivo va en el secret LABSUSER_PEM.
   EOT
   type        = string
   default     = "vockey"
@@ -89,6 +93,37 @@ variable "admin_token" {
 }
 
 # ---------------------------------------------------------------------------
+# Origen del codigo del entorno
+#
+# Cada servidor descarga la carpeta demo/ directamente desde GitHub al arrancar.
+# El repositorio es publico, asi que no hace falta S3 ni credenciales de AWS
+# dentro de la maquina. Lo que se despliega es lo que esta en el repositorio
+# (en la rama o commit indicados), no la copia local del alumno.
+# ---------------------------------------------------------------------------
+
+variable "demo_repo_url" {
+  description = "Repositorio GitHub (sin .git) del que las instancias descargan el entorno."
+  type        = string
+  default     = "https://github.com/asanchezo-duoc/ADY1103-Activities"
+}
+
+variable "demo_repo_ref" {
+  description = <<-EOT
+    Rama, tag o commit a descargar. Fijar un commit garantiza que todos los
+    servidores levanten exactamente el mismo codigo aunque el repositorio
+    cambie durante la clase.
+  EOT
+  type        = string
+  default     = "main"
+}
+
+variable "demo_repo_subdir" {
+  description = "Ruta de la carpeta del entorno dentro del repositorio."
+  type        = string
+  default     = "Casos/AndysMotors/demo"
+}
+
+# ---------------------------------------------------------------------------
 # Computo
 # ---------------------------------------------------------------------------
 
@@ -100,15 +135,34 @@ variable "instance_type" {
 
 variable "enable_monitoring" {
   description = <<-EOT
-    Levanta una instancia adicional con Prometheus + Grafana ya configurados,
-    como referencia.
+    Levanta la instancia "monitoreo" con el stack de observabilidad PROPIO de la
+    EP2: Prometheus + Grafana + node_exporter en contenedores Docker, con el
+    prometheus.yml, el datasource y los 2 dashboards definidos en
+    infra/monitoring/ (no es la version de referencia del docente).
 
-    IMPORTANTE: si el ejercicio es que el estudiante construya su propio stack
-    de monitoreo, hay que ponerlo en **false**. El entorno de Andys Motors solo
-    expone telemetria; recolectarla y visualizarla es justamente el trabajo.
+    Ademas habilita los Security Groups para recolectar los exporters (sidecars)
+    de los demas servidores. Dejar en true para la evaluacion.
   EOT
   type        = bool
   default     = true
+}
+
+variable "monitoring_instance_type" {
+  description = "Tipo de instancia de la maquina de monitoreo (Prometheus + Grafana). Si el lab la rechaza, usar t3.micro."
+  type        = string
+  default     = "t3.small"
+}
+
+variable "prometheus_retention_time" {
+  description = "Rotacion de datos de Prometheus por tiempo (--storage.tsdb.retention.time)."
+  type        = string
+  default     = "15d"
+}
+
+variable "prometheus_retention_size" {
+  description = "Rotacion de datos de Prometheus por tamano (--storage.tsdb.retention.size). Debe caber en el disco raiz."
+  type        = string
+  default     = "5GB"
 }
 
 variable "root_volume_size" {

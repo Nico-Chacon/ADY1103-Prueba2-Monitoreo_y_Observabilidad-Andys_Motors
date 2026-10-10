@@ -27,16 +27,16 @@ admin_token = "andys-lab"
 
 # aws_region        = "us-east-1"
 # project_name      = "andys-motors"
-# key_name          = "vockey"
+# key_name          = "vockey"   # su llave privada es labsuser.pem
 # instance_type     = "t3.micro"
 # root_volume_size  = 20
 
-# Instancia adicional con Prometheus + Grafana YA configurados, como referencia.
-#
-# Si el ejercicio es que el estudiante construya su propio stack de monitoreo,
-# hay que ponerlo en FALSE: el entorno solo expone telemetria, y recolectarla es
-# justamente el trabajo.
-# enable_monitoring = true
+# Stack de observabilidad PROPIO de la EP2 (Prometheus + Grafana + node_exporter
+# en contenedores, definido en infra/monitoring/). Dejar en true.
+# enable_monitoring        = true
+# monitoring_instance_type = "t3.small"   # si el lab la rechaza: "t3.micro"
+# prometheus_retention_time = "15d"       # rotacion de datos por tiempo
+# prometheus_retention_size = "5GB"       # rotacion de datos por tamano
 
 # Abrir el puerto 80 del balanceador a Internet (comportamiento real de un sitio
 # publico). En el laboratorio conviene dejarlo en false: solo entra admin_cidr.

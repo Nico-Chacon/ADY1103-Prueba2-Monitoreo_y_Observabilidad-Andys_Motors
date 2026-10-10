@@ -1,0 +1,53 @@
+# ===========================================================================
+# prometheus.yml - AndysMotors (EP2 ADY1103 Monitoreo y Observabilidad)
+#
+# Generado por Terraform (infra/monitoring/prometheus.yml.tftpl): las IP
+# privadas de los servidores son fijas, por eso pueden escribirse aqui.
+# Se usan IP PRIVADAS porque se conservan al detener/encender las instancias.
+# ===========================================================================
+global:
+  scrape_interval: 15s       # cada cuanto se recolectan las metricas
+  evaluation_interval: 15s   # cada cuanto se evaluan reglas (si existieran)
+  external_labels:
+    proyecto: "andys-motors"
+    entorno: "learner-lab"
+
+scrape_configs:
+  # ------------------------------------------------------------------------
+  # 1. Prometheus se observa a si mismo (estado del servidor de monitoreo).
+  # ------------------------------------------------------------------------
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ------------------------------------------------------------------------
+  # 2. Plataformas de negocio: web, stock, agenda, crm y pagos.
+  #    Cada una expone /metrics en el mismo puerto en que atiende trafico:
+  #    metricas tecnicas (RED) y de negocio (agendamientos, pagos, ventas...).
+  # ------------------------------------------------------------------------
+  - job_name: "andys-plataformas"
+    metrics_path: /metrics
+    static_configs:
+${targets_plataformas}
+
+  # ------------------------------------------------------------------------
+  # 3. Balanceador HAProxy (puerta de entrada). Trae el exporter integrado,
+  #    no necesita sidecar. Entrega estado UP/DOWN y codigos HTTP por backend.
+  # ------------------------------------------------------------------------
+  - job_name: "haproxy"
+    static_configs:
+      - targets: ["${borde_ip}:8404"]
+        labels:
+          rol: "borde"
+
+  # ------------------------------------------------------------------------
+  # 4. node_exporter (sidecar en cada servidor): CPU, RAM, disco y red del
+  #    sistema operativo. La etiqueta "servidor" identifica la maquina.
+  # ------------------------------------------------------------------------
+  - job_name: "node"
+    static_configs:
+${targets_nodos}
+      - targets: ["host.docker.internal:9100"]
+        labels:
+          servidor: "monitoreo"
+${postgres_job}
