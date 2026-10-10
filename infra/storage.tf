@@ -10,7 +10,7 @@
 # accesibles desde Internet. Es la proteccion mas barata del proyecto.
 
 resource "aws_s3_bucket" "documentos" {
-  bucket = bucket = aws_s3_bucket.documentos.id
+  bucket = aws_s3_bucket.documentos.id
 }
 
 resource "aws_s3_bucket_public_access_block" "documentos" {
