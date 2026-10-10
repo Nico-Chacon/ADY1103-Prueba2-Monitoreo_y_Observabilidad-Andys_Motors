@@ -10,7 +10,7 @@
 # accesibles desde Internet. Es la proteccion mas barata del proyecto.
 
 resource "aws_s3_bucket" "documentos" {
-  bucket = "andys-motors-tfstate-chacon-ep2-1791599572"
+  bucket = "andys-motors-documentos-chacon-ep2-20261010"
 }
 
 resource "aws_s3_bucket_public_access_block" "documentos" {
