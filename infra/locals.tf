@@ -16,6 +16,9 @@ locals {
     agenda = 8083
     crm    = 8084
     pagos  = 8085
+    locals {
+    bucket_documentos = "andysmotors-documentos-chacon-202610"
+}
   }
 
   # Una maquina por plataforma, como describe el caso.
