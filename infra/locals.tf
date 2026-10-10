@@ -18,7 +18,7 @@ locals {
 
   bucket_documentos = "andysmotors-documentos-chacon-202610"
 }
-  }
+
 
   # Una maquina por plataforma, como describe el caso.
   servidores_completa = merge(
