@@ -49,6 +49,9 @@ jobs:
       TF_INPUT: "0"
 
     steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
       # Falla con mensaje claro (antes el job quedaba "skipped" sin explicacion).
       - name: Validar la confirmacion
         run: |
@@ -57,9 +60,6 @@ jobs:
             echo "::error::Confirmacion incorrecta. Escribe exactamente: destruir"
             exit 1
           fi
-
-      - name: Descargar el repositorio
-        uses: actions/checkout@v4
 
       - name: Normalizar finales de linea (CRLF a LF)
         run: |
