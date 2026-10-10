@@ -8,8 +8,8 @@
 # bucket, sin necesitar DynamoDB (que el Learner Lab no siempre habilita).
 terraform {
   backend "s3" {
-    key          = "andys-motors/terraform.tfstate"
-    region       = "us-east-1"
-    use_lockfile = true
+    bucket = "andys-motors-tfstate-chacon-ep2-1791599572"
+    key    = "andysmotors/terraform.tfstate"
+    region = "us-east-1"
   }
 }
