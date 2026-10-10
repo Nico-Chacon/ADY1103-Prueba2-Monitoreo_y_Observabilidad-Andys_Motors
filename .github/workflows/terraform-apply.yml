@@ -140,6 +140,16 @@ jobs:
           echo "----- Referencias al bucket -----"
           terraform state list | grep -E 'aws_s3_bucket|aws_s3_object' || true
 
+      - name: "[DEBUG] Estado actual de Terraform"
+        working-directory: ./infra
+        run: |
+          echo "Commit ejecutado:"
+          git rev-parse --short HEAD
+          echo "Recursos S3 en el estado:"
+          terraform state list | grep -E 'aws_s3_bucket|aws_s3_object' || true
+          echo "Referencias al recurso antiguo:"
+          terraform state list | grep 'aws_s3_bucket.documentos' || true
+
       # ================== FASE 3: PLAN Y APPLY ============================
       - name: "[F3] Terraform Plan"
         working-directory: ./infra
