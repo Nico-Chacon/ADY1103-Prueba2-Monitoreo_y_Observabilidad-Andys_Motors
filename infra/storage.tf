@@ -1,56 +1,15 @@
-# ---------------------------------------------------------------------------
-# Amazon S3: archivos, documentos, imagenes de vehiculos, respaldos y reportes.
-#
-# El nombre de un bucket es global en todo AWS, asi que se le agrega el ID de la
-# cuenta del lab para evitar colisiones con otros alumnos.
-# ---------------------------------------------------------------------------
 
-
-# Sin esto, una politica mal escrita podria dejar documentos de clientes
-# accesibles desde Internet. Es la proteccion mas barata del proyecto.
+# ---------------------------------------------------------------------------
+# Amazon S3: archivos, documentos, imagenes, respaldos y reportes.
+# Se reutiliza un bucket creado previamente en AWS Academy.
+# ---------------------------------------------------------------------------
 
 locals {
   documentos_bucket = "andys-motors-documentos-chacon-ep2-20261010"
 }
 
-resource "aws_s3_bucket_public_access_block" "documentos" {
-  bucket = local.documentos_bucket
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "documentos" {
-  bucket = local.documentos_bucket
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "documentos" {
-  bucket = local.documentos_bucket
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
 # ---------------------------------------------------------------------------
 # Distribucion del entorno de Andys Motors a los servidores
-#
-# Cada servidor necesita el codigo del entorno (las aplicaciones, el
-# docker-compose y la configuracion de HAProxy). Se empaqueta la carpeta demo/
-# y se sube al bucket; el script de arranque de cada maquina lo descarga con la
-# CLI de AWS, usando el perfil de instancia del laboratorio.
-#
-# Se descarta clonar el repositorio desde las instancias: obligaria a que fuera
-# publico. Y se descarta incrustar el codigo en el user_data: AWS lo limita a
-# 16 KB y el entorno es bastante mas grande.
 # ---------------------------------------------------------------------------
 
 data "archive_file" "demo" {
@@ -58,15 +17,14 @@ data "archive_file" "demo" {
   source_dir  = "${path.module}/../demo"
   output_path = "${path.module}/.terraform/tmp/demo.zip"
 
-  # Ojo con como funcionan las exclusiones de este proveedor: comparan rutas
-  # exactas, NO patrones. Poner "app/node_modules" no excluye su contenido. Por
-  # eso las carpetas se enumeran archivo por archivo con fileset(), que si
-  # entiende comodines. Sin esto, un "npm install" local hecho por error subiria
-  # miles de archivos al bucket en cada apply.
   excludes = concat(
     [".env", ".gitignore", "README.md"],
-    [for f in fileset("${path.module}/../demo", "app/node_modules/**") : f],
-    [for f in fileset("${path.module}/../demo", "scripts/__pycache__/**") : f],
+    [
+      for f in fileset("${path.module}/../demo", "app/node_modules/**") : f
+    ],
+    [
+      for f in fileset("${path.module}/../demo", "scripts/__pycache__/**") : f
+    ],
   )
 }
 
