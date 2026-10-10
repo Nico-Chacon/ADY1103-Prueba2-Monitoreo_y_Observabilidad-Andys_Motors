@@ -23,7 +23,7 @@ resource "aws_s3_bucket_public_access_block" "documentos" {
 }
 
 resource "aws_s3_bucket_versioning" "documentos" {
-  bucket = bucket = aws_s3_bucket.documentos.id
+  bucket = aws_s3_bucket.documentos.id
 
   versioning_configuration {
     status = "Enabled"
@@ -31,7 +31,7 @@ resource "aws_s3_bucket_versioning" "documentos" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "documentos" {
-  bucket = bucket = aws_s3_bucket.documentos.id
+  bucket = aws_s3_bucket.documentos.id
 
   rule {
     apply_server_side_encryption_by_default {
