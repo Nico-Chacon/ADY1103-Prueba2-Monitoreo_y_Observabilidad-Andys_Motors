@@ -133,6 +133,13 @@ jobs:
         continue-on-error: true
         run: terraform fmt -check -recursive
 
+      - name: "[DEBUG] Revisar recursos S3 en el estado"
+        working-directory: ./infra
+        run: |
+          terraform state list
+          echo "----- Referencias al bucket -----"
+          terraform state list | grep -E 'aws_s3_bucket|aws_s3_object' || true
+
       # ================== FASE 3: PLAN Y APPLY ============================
       - name: "[F3] Terraform Plan"
         working-directory: ./infra
