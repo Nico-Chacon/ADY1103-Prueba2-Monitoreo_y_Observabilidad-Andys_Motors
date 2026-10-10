@@ -8,8 +8,13 @@
 
 # Sin esto, una politica mal escrita podria dejar documentos de clientes
 # accesibles desde Internet. Es la proteccion mas barata del proyecto.
+
+resource "aws_s3_bucket" "documentos" {
+  bucket = bucket = aws_s3_bucket.documentos.id
+}
+
 resource "aws_s3_bucket_public_access_block" "documentos" {
-  bucket = local.bucket_documentos
+  bucket = bucket = aws_s3_bucket.documentos.id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -18,7 +23,7 @@ resource "aws_s3_bucket_public_access_block" "documentos" {
 }
 
 resource "aws_s3_bucket_versioning" "documentos" {
-  bucket = local.bucket_documentos
+  bucket = bucket = aws_s3_bucket.documentos.id
 
   versioning_configuration {
     status = "Enabled"
@@ -26,7 +31,7 @@ resource "aws_s3_bucket_versioning" "documentos" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "documentos" {
-  bucket = local.bucket_documentos
+  bucket = bucket = aws_s3_bucket.documentos.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -66,11 +71,8 @@ data "archive_file" "demo" {
 }
 
 resource "aws_s3_object" "demo" {
-  bucket = local.bucket_documentos
+  bucket = aws_s3_bucket.documentos.id
   key    = "entorno/demo.zip"
   source = data.archive_file.demo.output_path
-
-  # Cuando cambia el contenido del entorno, cambia el etag y Terraform vuelve a
-  # subirlo. Los servidores lo descargan de nuevo en su proximo arranque.
-  etag = data.archive_file.demo.output_md5
+  etag   = data.archive_file.demo.output_md5
 }
