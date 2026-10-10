@@ -8,16 +8,15 @@
 # ---------------------------------------------------------------------------
 
 locals {
-  # Puerto en el que escucha cada plataforma. Es el mismo dentro y fuera del
-  # contenedor, para que la direccion no cambie entre modos de despliegue.
   puertos = {
     web    = 8081
     stock  = 8082
     agenda = 8083
     crm    = 8084
     pagos  = 8085
-    locals {
-    bucket_documentos = "andysmotors-documentos-chacon-202610"
+  }
+
+  bucket_documentos = "andysmotors-documentos-chacon-202610"
 }
   }
 
