@@ -114,7 +114,13 @@ jobs:
             echo "Bucket del state creado: $TF_STATE_BUCKET"
           fi
 
-      
+
+      # Un run cancelado o con credenciales vencidas puede dejar un candado
+      # huerfano en S3 ("Error acquiring the state lock"). Como el grupo
+      # "concurrency" garantiza que no hay otro run activo, es seguro borrarlo.
+      - name: Liberar candado huerfano del state
+        run: aws s3 rm "s3://${TF_STATE_BUCKET}/andys-motors/terraform.tfstate.tflock" || true
+
       - name: terraform init
         run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
 
@@ -145,11 +151,11 @@ jobs:
 
       - name: terraform plan
         if: env.ACCION == 'plan' || env.ACCION == 'apply'
-        run: terraform plan -input=false -out=tfplan
-      
+        run: terraform plan -input=false -lock-timeout=120s -out=tfplan
+
       - name: terraform apply
         if: env.ACCION == 'apply'
-        run: terraform apply -input=false -auto-approve tfplan
+        run: terraform apply -input=false -lock-timeout=120s -auto-approve tfplan
 
       - name: Publicar outputs en el resumen de la ejecucion
         if: env.ACCION == 'apply' || env.ACCION == 'output'

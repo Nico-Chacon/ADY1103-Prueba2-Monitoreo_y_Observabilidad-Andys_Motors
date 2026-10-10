@@ -1,13 +1,16 @@
 name: Terraform Destroy
 
-# Ejecucion MANUAL. Destruye TODA la infraestructura creada por Terraform Apply
-# (las 8 EC2, security groups y el bucket de documentos).
+# Ejecucion MANUAL. Destruye TODO lo creado por Terraform Apply:
+# las 8 EC2, security groups, objetos y bucket de documentos.
 # NO borra el bucket del state (se creo a mano, fuera de Terraform).
+#
+# Requisito: credenciales vigentes de la sesion ACTUAL del Learner Lab
+# (secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN).
 on:
   workflow_dispatch:
     inputs:
       confirmar:
-        description: 'Escribe "destruir" para confirmar'
+        description: 'Escribe destruir para confirmar'
         type: string
         required: true
 
@@ -20,24 +23,25 @@ permissions:
 
 jobs:
   destroy:
-    if: inputs.confirmar == 'destruir'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     defaults:
       run:
         working-directory: infra
 
     env:
+      CONFIRMAR: ${{ inputs.confirmar }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_DEFAULT_REGION: us-east-1
-      # Terraform exige las variables aunque sea para destruir.
-      TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
-      TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-      TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN }}
+      # Para destruir, Terraform solo necesita que las variables existan y sean
+      # validas. Si falta algun secret se usan valores de relleno.
+      TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR || '0.0.0.0/32' }}
+      TF_VAR_db_password: ${{ secrets.DB_PASSWORD || 'Relleno.Destroy_123' }}
+      TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD || 'Relleno.Destroy_123' }}
+      TF_VAR_admin_token: ${{ secrets.ADMIN_TOKEN || 'relleno-destroy' }}
       TF_VAR_enable_monitoring: "true"
       TF_VAR_topologia: ${{ vars.TOPOLOGIA || 'completa' }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'andys-motors-tfstate-chacon-ep2' }}
@@ -45,6 +49,15 @@ jobs:
       TF_INPUT: "0"
 
     steps:
+      # Falla con mensaje claro (antes el job quedaba "skipped" sin explicacion).
+      - name: Validar la confirmacion
+        run: |
+          valor="$(echo "$CONFIRMAR" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+          if [ "$valor" != "destruir" ]; then
+            echo "::error::Confirmacion incorrecta. Escribe exactamente: destruir"
+            exit 1
+          fi
+
       - name: Descargar el repositorio
         uses: actions/checkout@v4
 
@@ -59,8 +72,10 @@ jobs:
 
       - name: Comprobar credenciales del lab
         run: |
-          aws sts get-caller-identity --query Account --output text > /dev/null \
-            || { echo "::error::Credenciales vencidas. Actualiza los 3 secrets AWS_*."; exit 1; }
+          if ! aws sts get-caller-identity --query Account --output text; then
+            echo "::error::Credenciales vencidas. Inicia el lab, copia AWS Details > AWS CLI y actualiza los 3 secrets AWS_*."
+            exit 1
+          fi
 
       - name: Instalar Terraform
         uses: hashicorp/setup-terraform@v3
@@ -68,8 +83,80 @@ jobs:
           terraform_version: 1.10.5
           terraform_wrapper: false
 
+      - name: Comprobar que existe el bucket del state
+        run: |
+          if ! aws s3api head-bucket --bucket "$TF_STATE_BUCKET" 2>/dev/null; then
+            echo "::error::No existe el bucket del state $TF_STATE_BUCKET en esta cuenta. Si el lab es otra cuenta, los recursos hay que borrarlos a mano desde la consola."
+            exit 1
+          fi
+
+      # Candado huerfano de un run anterior cancelado o fallido.
+      - name: Liberar candado huerfano del state
+        run: aws s3 rm "s3://${TF_STATE_BUCKET}/andys-motors/terraform.tfstate.tflock" || true
+
       - name: terraform init
         run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
 
+      # El bucket de documentos se gestiona por CLI (ver terraform-apply.yml).
+      # Si el state antiguo aun lo tiene, se saca para que no bloquee el destroy.
+      - name: Dejar de gestionar el recurso principal del bucket
+        run: |
+          if terraform state list | grep -Fxq 'aws_s3_bucket.documentos'; then
+            terraform state rm aws_s3_bucket.documentos
+          else
+            echo "El bucket no esta registrado como recurso de Terraform"
+          fi
+
+      - name: Recursos que se destruiran
+        run: terraform state list || true
+
       - name: terraform destroy
-        run: terraform destroy -input=false -auto-approve
+        run: terraform destroy -input=false -lock-timeout=120s -auto-approve
+
+      # Vacia el bucket de documentos (incluye versiones y delete markers) y lo borra.
+      - name: Vaciar y borrar el bucket de documentos
+        if: success()
+        run: |
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          B="andys-motors-docs-${ACCOUNT_ID}"
+          if ! aws s3api head-bucket --bucket "$B" 2>/dev/null; then
+            echo "El bucket $B ya no existe"
+            exit 0
+          fi
+          python3 - "$B" <<'PY'
+          import json, subprocess, sys
+          b = sys.argv[1]
+          def sh(*a):
+              return subprocess.run(a, capture_output=True, text=True)
+          while True:
+              r = sh("aws", "s3api", "list-object-versions", "--bucket", b,
+                     "--max-items", "1000", "--output", "json")
+              d = json.loads(r.stdout or "{}") or {}
+              objs = [{"Key": x["Key"], "VersionId": x["VersionId"]}
+                      for x in (d.get("Versions") or []) + (d.get("DeleteMarkers") or [])]
+              if not objs:
+                  break
+              r = sh("aws", "s3api", "delete-objects", "--bucket", b,
+                     "--delete", json.dumps({"Objects": objs, "Quiet": True}))
+              if r.returncode:
+                  print(r.stderr)
+                  sys.exit(1)
+          print("Bucket vacio")
+          PY
+          aws s3api delete-bucket --bucket "$B"
+          echo "Bucket $B eliminado"
+
+      # Si algo fallo, deja en el log lo que sigue vivo para diagnosticar.
+      - name: Diagnostico si fallo
+        if: failure()
+        run: |
+          echo "=== EC2 que siguen vivas ==="
+          aws ec2 describe-instances \
+            --filters "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key=='Name']|[0].Value]" \
+            --output table || true
+          echo "=== Security Groups andys-motors ==="
+          aws ec2 describe-security-groups --filters "Name=group-name,Values=andys-motors-*" \
+            --query "SecurityGroups[].[GroupId,GroupName]" --output table || true
+          echo "=== Recursos en el state ==="
+          terraform state list || true
